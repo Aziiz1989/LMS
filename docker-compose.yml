@@ -1,0 +1,62 @@
+services:
+  dev:
+    build: .
+    volumes:
+      # Mount source code for live reloading
+      - .:/usr/src/app
+      # Persist Maven cache for faster rebuilds
+      - m2-cache:/root/.m2
+      # Persist Clojure gitlibs cache
+      - gitlibs-cache:/root/.gitlibs
+      # Persist Datomic dev-local data
+      - datomic-data:/root/.datomic
+    ports:
+      # nREPL port for editor connectivity (Calva, CIDER, etc.)
+      - "7888:7888"
+    environment:
+      # "dev-local" for development, "peer" for production-like testing
+      DATOMIC_ENV: dev-local
+      DATOMIC_LOCAL_ROOT: /root/.datomic
+      # Peer Library settings (used when DATOMIC_ENV=peer)
+      DATOMIC_URI: datomic:sql://lms?jdbc:postgresql://postgres:5432/datomic?user=datomic&password=datomic
+    stdin_open: true
+    tty: true
+    command: clojure -M:dev
+
+  # Datomic Pro Transactor (for production-like local testing)
+  datomic-transactor:
+    image: your-datomic-transactor-image:latest
+    volumes:
+      - datomic-transactor-data:/data
+    environment:
+      DATOMIC_STORAGE_ADMIN_PASSWORD: admin
+      DATOMIC_STORAGE_DATOMIC_PASSWORD: datomic
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - pro
+
+  # PostgreSQL as Datomic storage backend
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: datomic
+      POSTGRES_USER: datomic
+      POSTGRES_PASSWORD: datomic
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datomic"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - pro
+
+volumes:
+  m2-cache:
+  gitlibs-cache:
+  datomic-data:
+  datomic-transactor-data:
+  postgres-data:

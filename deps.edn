@@ -1,0 +1,46 @@
+{:paths ["src" "resources"]
+
+ :deps
+ {org.clojure/clojure {:mvn/version "1.12.4"}
+
+  ;; Web server
+  ring/ring-core {:mvn/version "1.15.3"}
+  ring/ring-jetty-adapter {:mvn/version "1.15.3"}
+  ring/ring-defaults {:mvn/version "0.7.0"}
+
+  ;; Routing
+  metosin/reitit {:mvn/version "0.10.0"}
+
+  ;; HTML templating (htmx served via hiccup)
+  hiccup/hiccup {:mvn/version "2.0.0"}
+
+  ;; Database
+  com.datomic/local {:mvn/version "1.0.291"}
+
+  ;; JSON
+  metosin/jsonista {:mvn/version "0.3.13"}
+
+  ;; Logging
+  com.taoensso/timbre {:mvn/version "6.8.0"}
+
+  ;; CSV parsing (for migration)
+  org.clojure/data.csv {:mvn/version "1.1.0"}}
+
+ :aliases
+ {:dev
+  {:extra-paths ["dev"]
+   :extra-deps
+   {nrepl/nrepl {:mvn/version "1.3.1"}
+    cider/cider-nrepl {:mvn/version "0.58.0"}}
+   :main-opts ["-m" "nrepl.cmdline"
+               "--middleware" "[cider.nrepl/cider-middleware]"
+               "--bind" "0.0.0.0"
+               "--port" "7888"]}
+
+  :run
+  {:main-opts ["-m" "lms.core"]}
+
+  :test
+  {:extra-paths ["test"]
+   :extra-deps
+   {lambdaisland/kaocha {:mvn/version "1.91.1392"}}}}}

@@ -1,0 +1,1 @@
+["^ ","~:members",["^ ","VIOLATIONS_ATTR_KEY",["~#set",[["^ ","~:flags",["^2",["~:public","~:static","~:field","~:final"]]]]],"<init>",["^2",[["^ ","^3",["^2",["~:method","^4"]]]]],"initialize",["^2",[["^ ","^3",["^2",["^9","^4"]]]]],"onRequestBegin",["^2",[["^ ","^3",["^2",["^9","^4"]]]]],"onComplianceViolation",["^2",[["^ ","^3",["^2",["^9","^4"]]]]]]]
