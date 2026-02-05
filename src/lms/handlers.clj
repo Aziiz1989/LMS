@@ -258,6 +258,51 @@
             (assoc :flash {:type :error
                            :message (str "Error: " (.getMessage e))}))))))
 
+(defn retract-contract-handler
+  "Handle POST /contracts/:id/retract-contract - retract a contract (data correction).
+
+   Retracts the contract and ALL associated entities (fees, installments,
+   payments, disbursements, deposits, principal-allocations) atomically.
+   TX metadata records the correction reason and who performed it.
+   Datomic history preserves all retracted datoms for forensics.
+
+   Form params:
+   - reason: correction reason keyword (correction, duplicate-removal, erroneous-entry)
+   - note: optional free-text explanation
+
+   Returns: Redirect to contracts list"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          reason-str (get-in request [:form-params "reason"])
+          reason (when (and reason-str (not (str/blank? reason-str)))
+                   (keyword reason-str))
+          note (get-in request [:form-params "note"])]
+
+      (if (and contract-id reason)
+        (do
+          (ops/retract-contract (:conn request) contract-id reason "web-user"
+                                :note (when-not (str/blank? note) note))
+          (log/info "Contract retracted" {:contract-id contract-id
+                                          :reason reason})
+          (-> (response/redirect "/contracts")
+              (assoc :flash "Contract has been retracted.")))
+
+        (do
+          (log/warn "Invalid contract retraction data" {:contract-id contract-id-str
+                                                         :reason reason-str})
+          (-> (response/redirect (str "/contracts/" contract-id-str))
+              (assoc :flash {:type :error
+                             :message "Invalid retraction data. Please select a reason."})))))
+
+    (catch Exception e
+      (log/error e "Error retracting contract")
+      (let [contract-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error
+                           :message (str "Error: " (.getMessage e))}))))))
+
 ;; ============================================================
 ;; Settlement Handlers
 ;; ============================================================
@@ -528,6 +573,135 @@
       (-> (response/response (views/error-500-page e))
           (response/status 500)
           (response/content-type "text/html; charset=utf-8")))))
+
+;; ============================================================
+;; Origination Handlers
+;; ============================================================
+
+(defn originate-handler
+  "Handle POST /contracts/:id/originate — execute funding-day operations.
+
+   Records principal allocation (fee deduction from funding), deposit from
+   funding, merchant disbursement, and optional excess return via
+   boarding/originate.
+
+   Form params:
+   - date: origination date (YYYY-MM-DD) — required
+   - fee-deduction: amount allocated from principal to settle fees
+   - deposit-from-funding: amount deducted from principal for deposit
+   - disbursement-amount: amount wired to merchant — required
+   - disbursement-reference: wire transfer reference — required
+   - disbursement-iban: destination IBAN
+   - disbursement-bank: destination bank
+   - excess-return: customer excess being returned
+
+   Returns: Redirect to contract detail page with flash message"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          params (:form-params request)
+          get-param (fn [k] (let [v (get params k)]
+                              (when-not (str/blank? v) v)))
+          date-str (get-param "date")
+          date (when date-str
+                 (try (dates/->date (dates/parse-date date-str))
+                      (catch Exception _ nil)))
+          fee-deduction (when-let [s (get-param "fee-deduction")]
+                          (try (bigdec s) (catch Exception _ nil)))
+          deposit-from-funding (when-let [s (get-param "deposit-from-funding")]
+                                 (try (bigdec s) (catch Exception _ nil)))
+          disbursement-amount (when-let [s (get-param "disbursement-amount")]
+                                (try (bigdec s) (catch Exception _ nil)))
+          disbursement-reference (get-param "disbursement-reference")
+          disbursement-iban (get-param "disbursement-iban")
+          disbursement-bank (get-param "disbursement-bank")
+          excess-return (when-let [s (get-param "excess-return")]
+                          (try (bigdec s) (catch Exception _ nil)))]
+
+      (if (and contract-id date disbursement-amount disbursement-reference)
+        (let [origination-data (cond-> {:date date
+                                        :disbursement-amount disbursement-amount
+                                        :disbursement-reference disbursement-reference}
+                                 fee-deduction (assoc :fee-deduction fee-deduction)
+                                 deposit-from-funding (assoc :deposit-from-funding deposit-from-funding)
+                                 disbursement-iban (assoc :disbursement-iban disbursement-iban)
+                                 disbursement-bank (assoc :disbursement-bank disbursement-bank)
+                                 excess-return (assoc :excess-return excess-return))
+              result (boarding/originate (:conn request) contract-id origination-data "web-user")]
+
+          (if (:success? result)
+            (do
+              (log/info "Contract originated via web" {:contract-id contract-id
+                                                       :steps (:steps result)})
+              (-> (response/redirect (str "/contracts/" contract-id))
+                  (assoc :flash (str "Contract originated successfully. Steps: "
+                                     (str/join ", " (map name (:steps result)))))))
+            (do
+              (log/warn "Origination failed" {:contract-id contract-id
+                                               :error (:error result)})
+              (-> (response/redirect (str "/contracts/" contract-id))
+                  (assoc :flash {:type :error
+                                 :message (str "Origination failed: " (:error result))})))))
+
+        (do
+          (log/warn "Invalid origination data" {:contract-id contract-id-str
+                                                 :date date-str
+                                                 :disbursement-amount (get-param "disbursement-amount")
+                                                 :disbursement-reference (get-param "disbursement-reference")})
+          (-> (response/redirect (str "/contracts/" contract-id-str))
+              (assoc :flash {:type :error
+                             :message "Invalid origination data. Date, disbursement amount, and reference are required."})))))
+
+    (catch Exception e
+      (log/error e "Error originating contract")
+      (let [contract-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error
+                           :message (str "Error: " (.getMessage e))}))))))
+
+(defn retract-origination-handler
+  "Handle POST /contracts/:id/retract-origination — retract origination entities.
+
+   Retracts all principal allocations, funding disbursements, deposits from
+   funding, and excess returns for a contract. Data correction operation.
+
+   Form params:
+   - reason: correction reason keyword (correction, duplicate-removal, erroneous-entry)
+   - note: optional free-text explanation
+
+   Returns: Redirect to contract detail page"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          reason-str (get-in request [:form-params "reason"])
+          reason (when (and reason-str (not (str/blank? reason-str)))
+                   (keyword reason-str))
+          note (get-in request [:form-params "note"])]
+
+      (if (and contract-id reason)
+        (do
+          (ops/retract-origination (:conn request) contract-id reason "web-user"
+                                   :note (when-not (str/blank? note) note))
+          (log/info "Origination retracted" {:contract-id contract-id
+                                              :reason reason})
+          (-> (response/redirect (str "/contracts/" contract-id))
+              (assoc :flash "Origination retracted successfully.")))
+
+        (do
+          (log/warn "Invalid retraction data" {:contract-id contract-id-str
+                                                :reason reason-str})
+          (-> (response/redirect (str "/contracts/" contract-id-str))
+              (assoc :flash {:type :error
+                             :message "Please select a reason for correction."})))))
+
+    (catch Exception e
+      (log/error e "Error retracting origination")
+      (let [contract-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error
+                           :message (str "Error: " (.getMessage e))}))))))
 
 ;; ============================================================
 ;; Development Helpers

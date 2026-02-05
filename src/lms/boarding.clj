@@ -410,6 +410,112 @@
                      :message (str "Boarding failed: " (.getMessage e))}]})))))
 
 ;; ============================================================
+;; Origination (funding-day operations)
+;; ============================================================
+
+(defn originate
+  "Execute funding-day operations for a boarded contract.
+
+   Called after board-new-contract, once funding is approved. Orchestrates
+   the operations that happen on origination day:
+
+   1. Record principal allocation (fees deducted from funding → waterfall)
+   2. Record deposit from funding (if any → deposit entity, not waterfall)
+   3. Record merchant disbursement (actual wire to merchant)
+   4. Record excess return (if any → separate disbursement entity)
+
+   Pre-boarding operations (customer fee pre-payments, customer deposit
+   pre-payments) should be recorded separately via record-payment and
+   receive-deposit before calling originate.
+
+   Each step is a separate Datomic transaction. If any step fails,
+   previously completed steps remain committed (they're valid facts).
+
+   Args:
+   - conn: Datomic connection
+   - contract-id: UUID of the boarded contract
+   - origination-data: Map with:
+     - :date (required) — origination/funding business date
+     - :fee-deduction (optional) — amount allocated from principal to settle fees.
+                                    Omit if fees fully pre-paid by customer.
+     - :deposit-from-funding (optional) — amount deducted from principal for deposit.
+                                           Omit if deposit fully pre-paid.
+     - :disbursement-amount (required) — actual amount wired to merchant
+     - :disbursement-reference (required) — wire transfer reference
+     - :disbursement-iban (optional) — destination IBAN
+     - :disbursement-bank (optional) — destination bank
+     - :excess-return (optional) — customer excess being returned via wire.
+                                    Omit if no excess.
+   - user-id: User performing the operation
+
+   Returns:
+   {:success? true
+    :steps [:principal-allocation :deposit-from-funding :disbursement]}
+   or
+   {:success? false :error \"...\" :completed-steps [...]}
+
+   Usage:
+     (originate conn contract-id
+       {:date #inst \"2024-01-15\"
+        :fee-deduction 46687.50M
+        :deposit-from-funding 40000M
+        :disbursement-amount 533312.50M
+        :disbursement-reference \"WT-001\"
+        :disbursement-iban \"SA242000...\"
+        :disbursement-bank \"ANB\"}
+       \"user-1\")"
+  [conn contract-id origination-data user-id]
+  (let [{:keys [date fee-deduction deposit-from-funding
+                disbursement-amount disbursement-reference
+                disbursement-iban disbursement-bank
+                excess-return]} origination-data
+        completed (atom [])]
+    (try
+      ;; 1. Principal allocation (fees deducted from funding)
+      (when (and fee-deduction (pos? fee-deduction))
+        (ops/record-principal-allocation conn contract-id fee-deduction date user-id
+                                         :reference "FUNDING-FEE-SETTLEMENT")
+        (swap! completed conj :principal-allocation)
+        (log/info "Principal allocation recorded"
+                  {:contract-id contract-id :amount fee-deduction}))
+
+      ;; 2. Deposit from funding
+      (when (and deposit-from-funding (pos? deposit-from-funding))
+        (ops/receive-deposit conn contract-id deposit-from-funding date user-id
+                             :source :funding)
+        (swap! completed conj :deposit-from-funding)
+        (log/info "Deposit from funding recorded"
+                  {:contract-id contract-id :amount deposit-from-funding}))
+
+      ;; 3. Merchant disbursement
+      (ops/record-disbursement conn contract-id disbursement-amount date
+                               disbursement-reference user-id
+                               :iban disbursement-iban
+                               :bank disbursement-bank)
+      (swap! completed conj :disbursement)
+      (log/info "Disbursement recorded"
+                {:contract-id contract-id :amount disbursement-amount
+                 :reference disbursement-reference})
+
+      ;; 4. Excess return (if any)
+      (when (and excess-return (pos? excess-return))
+        (ops/record-excess-return conn contract-id excess-return date
+                                  disbursement-reference user-id
+                                  :note "Customer excess returned via funding wire")
+        (swap! completed conj :excess-return)
+        (log/info "Excess return recorded"
+                  {:contract-id contract-id :amount excess-return}))
+
+      {:success? true :steps @completed}
+
+      (catch Exception e
+        (log/error e "Origination failed"
+                  {:contract-id contract-id :completed-steps @completed})
+        {:success? false
+         :error (.getMessage e)
+         :completed-steps @completed}))))
+
+;; ============================================================
 ;; Development Examples
 ;; ============================================================
 

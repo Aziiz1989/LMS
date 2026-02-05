@@ -7,6 +7,7 @@
             [lms.db :as db]
             [lms.contract :as sut]
             [lms.waterfall :as waterfall]
+            [lms.operations :as ops]
             [datomic.client.api :as d]))
 
 ;; ============================================================
@@ -350,3 +351,169 @@
 
       (is (= 1 (count active-contracts)))
       (is (= 0 (count closed-contracts))))))
+
+;; ============================================================
+;; Principal Allocation Tests
+;; ============================================================
+
+(defn create-origination-contract
+  "Create a contract with fees suitable for testing principal allocation.
+
+   Principal: 750,000. Admin fee: 64,687.50. Other costs: 2,000.
+   Two installments. Returns contract-id."
+  [conn contract-id]
+  (d/transact conn
+              {:tx-data [{:db/id "contract"
+                          :contract/id contract-id
+                          :contract/external-id (str "ORIG-" (subs (str contract-id) 0 8))
+                          :contract/customer-name "Origination Test Co."
+                          :contract/customer-id "CR-ORIG-001"
+                          :contract/status :active
+                          :contract/start-date #inst "2024-01-01"
+                          :contract/principal 750000M
+                          :contract/security-deposit 50000M}
+
+                         ;; Admin fee
+                         {:fee/id (random-uuid)
+                          :fee/contract "contract"
+                          :fee/type :management
+                          :fee/amount 64687.50M
+                          :fee/due-date #inst "2024-01-01"}
+
+                         ;; Other costs fee
+                         {:fee/id (random-uuid)
+                          :fee/contract "contract"
+                          :fee/type :processing
+                          :fee/amount 2000M
+                          :fee/due-date #inst "2024-01-01"}
+
+                         ;; Installments
+                         {:installment/id (random-uuid)
+                          :installment/contract "contract"
+                          :installment/seq 1
+                          :installment/due-date #inst "2024-02-01"
+                          :installment/principal-due 375000M
+                          :installment/profit-due 15000M
+                          :installment/remaining-principal 750000M}
+
+                         {:installment/id (random-uuid)
+                          :installment/contract "contract"
+                          :installment/seq 2
+                          :installment/due-date #inst "2024-03-01"
+                          :installment/principal-due 375000M
+                          :installment/profit-due 15000M
+                          :installment/remaining-principal 375000M}
+
+                         {:db/id "datomic.tx"
+                          :tx/type :boarding
+                          :tx/contract "contract"
+                          :tx/author "test"}]})
+  contract-id)
+
+(deftest principal-allocation-flows-through-waterfall
+  (testing "Principal allocation settles fees via waterfall"
+    (let [conn (get-test-conn)
+          contract-id (random-uuid)
+          _ (create-origination-contract conn contract-id)]
+
+      ;; Record principal allocation covering both fees
+      (ops/record-principal-allocation conn contract-id 66687.50M
+                                       #inst "2024-01-15" "test-user"
+                                       :reference "FUNDING-FEE-SETTLEMENT")
+
+      (let [state (sut/contract-state (d/db conn) contract-id test-as-of-date)]
+        ;; Both fees should be paid in full
+        (is (every? #(= :paid (:status %)) (:fees state)))
+        (is (= 66687.50M (:total-fees-paid state)))
+        (is (= (:total-fees-due state) (:total-fees-paid state))
+            "fees-due should equal fees-paid (both fully paid)")))))
+
+(deftest principal-allocation-mixed-sources
+  (testing "Customer pre-payment + principal allocation together settle fees"
+    (let [conn (get-test-conn)
+          contract-id (random-uuid)
+          _ (create-origination-contract conn contract-id)]
+
+      ;; Customer pre-paid 20K towards admin fee
+      (record-payment conn contract-id 20000M "APP-FEE-PREPAY")
+
+      ;; Funding covers remainder: 44,687.50 admin + 2,000 other = 46,687.50
+      (ops/record-principal-allocation conn contract-id 46687.50M
+                                       #inst "2024-01-15" "test-user"
+                                       :reference "FUNDING-FEE-SETTLEMENT")
+
+      (let [state (sut/contract-state (d/db conn) contract-id test-as-of-date)]
+        ;; Both fees should be paid
+        (is (every? #(= :paid (:status %)) (:fees state)))
+        ;; Waterfall total = 20K + 46,687.50 = 66,687.50
+        (is (= 66687.50M (:total-fees-paid state)))
+        ;; Credit balance should be 0 (exact match)
+        (is (= 0M (:credit-balance state)))))))
+
+(deftest excess-return-does-not-affect-waterfall
+  (testing "Excess-return disbursement does NOT reduce waterfall total"
+    (let [conn (get-test-conn)
+          contract-id (random-uuid)
+          _ (create-origination-contract conn contract-id)]
+
+      ;; Fund fees fully via principal allocation
+      (ops/record-principal-allocation conn contract-id 66687.50M
+                                       #inst "2024-01-15" "test-user")
+
+      ;; Record excess return (should NOT affect waterfall)
+      (ops/record-excess-return conn contract-id 35000M #inst "2024-01-15"
+                                "WT-001-EXCESS" "test-user")
+
+      (let [state (sut/contract-state (d/db conn) contract-id test-as-of-date)]
+        ;; Fees still paid — excess-return didn't subtract
+        (is (every? #(= :paid (:status %)) (:fees state)))
+        (is (= 66687.50M (:total-fees-paid state)))))))
+
+(deftest funding-breakdown-balanced
+  (testing "Funding breakdown derives correct allocation and balances"
+    (let [conn (get-test-conn)
+          contract-id (random-uuid)
+          _ (create-origination-contract conn contract-id)]
+
+      ;; Customer pre-pays 20K fee + 10K deposit
+      (record-payment conn contract-id 20000M "APP-FEE-PREPAY")
+      (ops/receive-deposit conn contract-id 10000M #inst "2024-01-10" "test-user"
+                           :source :customer)
+
+      ;; Funding: fee allocation + deposit from funding + merchant disbursement
+      (ops/record-principal-allocation conn contract-id 46687.50M
+                                       #inst "2024-01-15" "test-user")
+      (ops/receive-deposit conn contract-id 40000M #inst "2024-01-15" "test-user"
+                           :source :funding)
+      (ops/record-disbursement conn contract-id 663312.50M
+                               #inst "2024-01-15" "WT-001" "test-user")
+
+      (let [db (d/db conn)
+            facts (sut/query-facts db contract-id)
+            breakdown (sut/funding-breakdown (:contract facts)
+                                             (:principal-allocations facts)
+                                             (:deposits facts)
+                                             (:disbursements facts))]
+        (is (= 750000M (:principal breakdown)))
+        (is (= 46687.50M (:fee-deductions breakdown)))
+        (is (= 40000M (:deposit-from-funding breakdown)))
+        (is (= 663312.50M (:merchant-disbursement breakdown)))
+        (is (= 0M (:excess-returned breakdown)))
+        (is (= 750000M (:total-allocated breakdown)))
+        (is (true? (:balanced? breakdown)))))))
+
+(deftest principal-allocation-appears-in-events
+  (testing "Principal allocation shows up in event timeline"
+    (let [conn (get-test-conn)
+          contract-id (random-uuid)
+          _ (create-origination-contract conn contract-id)]
+
+      (ops/record-principal-allocation conn contract-id 66687.50M
+                                       #inst "2024-01-15" "test-user"
+                                       :reference "FUNDING-FEE")
+
+      (let [events (sut/get-events (d/db conn) contract-id)
+            pa-events (filter #(= :principal-allocation (:event-type %)) events)]
+        (is (= 1 (count pa-events)))
+        (is (= 66687.50M (:amount (first pa-events))))
+        (is (= "FUNDING-FEE" (:reference (first pa-events))))))))

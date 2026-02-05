@@ -101,7 +101,10 @@
       ["/preview-payment" {:post handlers/preview-payment-handler}]
       ["/record-payment" {:post handlers/record-payment-handler}]
       ["/retract-payment" {:post handlers/retract-payment-handler}]
-      ["/calculate-settlement" {:post handlers/calculate-settlement-handler}]]]
+      ["/retract-contract" {:post handlers/retract-contract-handler}]
+      ["/calculate-settlement" {:post handlers/calculate-settlement-handler}]
+      ["/originate" {:post handlers/originate-handler}]
+      ["/retract-origination" {:post handlers/retract-origination-handler}]]]
     ;; Legacy test routes (keep for debugging)
     ["/test" {:get home-page}]
     ["/api"
@@ -136,5 +139,7 @@
     (require '[lms.core] :reload-all)
     :reloaded)
   (reload!)
+
+
   
 )

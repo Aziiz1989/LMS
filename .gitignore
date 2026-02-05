@@ -1,0 +1,34 @@
+# Clojure
+/target/
+/classes/
+/checkouts/
+pom.xml
+pom.xml.asc
+*.jar
+*.class
+/.lein-*
+/.nrepl-port
+/.cpcache/
+
+# Clj-kondo
+.clj-kondo/.cache/
+
+# Editor/IDE
+.calva/
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Obsidian
+.obsidian/
+
+# Environment
+.env
+.env.local

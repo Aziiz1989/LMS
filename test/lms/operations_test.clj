@@ -308,6 +308,63 @@
             ;; State returns to pre-payment (full outstanding)
             (is (= 221000M (:total-outstanding state-after)))))))))
 
+(deftest retract-contract-test
+  (testing "Retract contract removes contract and all associated entities"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)]
+
+      ;; Add some activity to the contract
+      (sut/record-payment conn contract-id 50000M #inst "2024-01-15" "PAY-001" "test-user")
+      (sut/record-disbursement conn contract-id 200000M #inst "2024-01-02" "WIRE-001" "test-user")
+      (sut/receive-deposit conn contract-id 10000M #inst "2024-01-15" "test-user")
+      (sut/record-principal-allocation conn contract-id 1000M #inst "2024-01-01" "test-user")
+
+      ;; Verify everything exists before retraction
+      (let [db (d/db conn)]
+        (is (some? (:db/id (contract/get-contract db contract-id))))
+        (is (= 1 (count (contract/get-fees db contract-id))))
+        (is (= 2 (count (contract/get-installments db contract-id))))
+        (is (= 1 (count (contract/get-payments db contract-id))))
+        (is (= 1 (count (contract/get-disbursements db contract-id))))
+        (is (= 1 (count (contract/get-deposits db contract-id))))
+        (is (= 1 (count (contract/get-principal-allocations db contract-id)))))
+
+      ;; Retract the contract
+      (sut/retract-contract conn contract-id :erroneous-entry "test-user"
+                            :note "Contract boarded against wrong customer")
+
+      ;; Verify everything is gone
+      (let [db (d/db conn)]
+        (is (nil? (:db/id (contract/get-contract db contract-id))))
+        (is (empty? (contract/get-fees db contract-id)))
+        (is (empty? (contract/get-installments db contract-id)))
+        (is (empty? (contract/get-payments db contract-id)))
+        (is (empty? (contract/get-disbursements db contract-id)))
+        (is (empty? (contract/get-deposits db contract-id)))
+        (is (empty? (contract/get-principal-allocations db contract-id)))
+
+        ;; Contract no longer appears in list-contracts
+        (is (empty? (filter #(= contract-id (:id %))
+                            (contract/list-contracts db nil)))))))
+
+  (testing "Retract contract with no activity removes contract + schedule only"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)]
+
+      (sut/retract-contract conn contract-id :erroneous-entry "test-user")
+
+      (let [db (d/db conn)]
+        (is (nil? (:db/id (contract/get-contract db contract-id))))
+        (is (empty? (contract/get-fees db contract-id)))
+        (is (empty? (contract/get-installments db contract-id))))))
+
+  (testing "Retract contract throws when contract not found"
+    (let [conn (get-test-conn)]
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"not found"
+                            (sut/retract-contract conn (random-uuid)
+                                                  :erroneous-entry "test-user"))))))
+
 ;; ============================================================
 ;; Rate Adjustment Tests
 ;; ============================================================
@@ -481,3 +538,153 @@
         (is (= 1 (count disb-txs)))
         (is (= 200000M (:amount (first disb-txs))))
         (is (= "WIRE-123" (:reference (first disb-txs)))))))))
+
+;; ============================================================
+;; Principal Allocation Tests
+;; ============================================================
+
+(deftest record-principal-allocation-test
+  (testing "Record principal allocation creates entity and is queryable"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)]
+
+      (sut/record-principal-allocation conn contract-id 1000M
+                                       #inst "2024-01-15" "test-user"
+                                       :reference "FUNDING-FEE-SETTLEMENT")
+
+      (let [db (d/db conn)
+            allocations (contract/get-principal-allocations db contract-id)]
+        (is (= 1 (count allocations)))
+        (let [pa (first allocations)]
+          (is (= 1000M (:principal-allocation/amount pa)))
+          (is (some? (:principal-allocation/id pa)))
+          (is (= "FUNDING-FEE-SETTLEMENT" (:principal-allocation/reference pa)))))))
+
+  (testing "Principal allocation appears in query-facts"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)]
+
+      (sut/record-principal-allocation conn contract-id 1000M
+                                       #inst "2024-01-15" "test-user")
+
+      (let [facts (contract/query-facts (d/db conn) contract-id)]
+        (is (= 1 (count (:principal-allocations facts)))))))
+
+  (testing "Principal allocation rejects non-positive amount"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)]
+
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"positive"
+                            (sut/record-principal-allocation conn contract-id 0M
+                                                             #inst "2024-01-15" "test-user")))
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"positive"
+                            (sut/record-principal-allocation conn contract-id -100M
+                                                             #inst "2024-01-15" "test-user"))))))
+
+(deftest record-excess-return-test
+  (testing "Record excess return creates disbursement with type :excess-return"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)]
+
+      (sut/record-excess-return conn contract-id 35000M #inst "2024-01-15"
+                                "WT-001-EXCESS" "test-user")
+
+      (let [db (d/db conn)
+            disbursements (contract/get-disbursements db contract-id)
+            excess (filter #(= :excess-return (:disbursement/type %)) disbursements)]
+        (is (= 1 (count excess)))
+        (is (= 35000M (:disbursement/amount (first excess))))
+        (is (= "WT-001-EXCESS" (:disbursement/reference (first excess))))))))
+
+;; ============================================================
+;; Deposit Source and Transfer Tests
+;; ============================================================
+
+(deftest receive-deposit-with-source-test
+  (testing "Deposit with :source stores deposit/source attribute"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)]
+
+      (sut/receive-deposit conn contract-id 40000M #inst "2024-01-15" "test-user"
+                           :source :funding)
+
+      (let [db (d/db conn)
+            deposits (contract/get-deposits db contract-id)
+            funded (filter #(= :funding (:deposit/source %)) deposits)]
+        (is (= 1 (count funded)))
+        (is (= 40000M (:deposit/amount (first funded)))))))
+
+  (testing "Deposit without :source omits deposit/source attribute"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)]
+
+      (sut/receive-deposit conn contract-id 10000M #inst "2024-01-15" "test-user")
+
+      (let [db (d/db conn)
+            deposits (contract/get-deposits db contract-id)]
+        (is (= 1 (count deposits)))
+        (is (nil? (:deposit/source (first deposits))))))))
+
+(deftest transfer-deposit-test
+  (testing "Transfer deposit creates entity with both contract refs"
+    (let [conn (get-test-conn)
+          source-id (create-simple-contract conn)
+          target-id (create-simple-contract conn)]
+
+      ;; First receive deposit on source contract
+      (sut/receive-deposit conn source-id 30000M #inst "2024-01-15" "test-user")
+
+      ;; Transfer from source to target
+      (sut/transfer-deposit conn source-id target-id 30000M
+                            #inst "2024-06-01" "test-user"
+                            :reference "REFI-DEP-TRANSFER")
+
+      ;; Verify transfer entity exists on source contract
+      (let [db (d/db conn)
+            source-deposits (contract/get-deposits db source-id)
+            transfers (filter #(= :transfer (:deposit/type %)) source-deposits)]
+        (is (= 1 (count transfers)))
+        (is (= 30000M (:deposit/amount (first transfers))))
+        (is (= "REFI-DEP-TRANSFER" (:deposit/reference (first transfers)))))
+
+      ;; Verify transfer shows up on target contract too (via get-deposits OR clause)
+      (let [db (d/db conn)
+            target-deposits (contract/get-deposits db target-id)
+            transfers-in (filter #(= :transfer (:deposit/type %)) target-deposits)]
+        (is (= 1 (count transfers-in)))))))
+
+;; ============================================================
+;; Payment Source Contract Tests
+;; ============================================================
+
+(deftest record-payment-with-source-contract-test
+  (testing "Payment with source-contract stores payment/source-contract ref"
+    (let [conn (get-test-conn)
+          old-contract-id (create-simple-contract conn)
+          new-contract-id (create-simple-contract conn)]
+
+      ;; Record settlement payment on old contract funded by new contract
+      (sut/record-payment conn old-contract-id 100000M #inst "2024-06-01"
+                          "REFI-SETTLE" "test-user"
+                          :source-contract new-contract-id)
+
+      (let [db (d/db conn)
+            payments (contract/get-payments db old-contract-id)
+            settlement (first payments)]
+        (is (= 1 (count payments)))
+        (is (= 100000M (:payment/amount settlement)))
+        ;; source-contract should be a ref to the new contract
+        (is (some? (:payment/source-contract settlement))))))
+
+  (testing "Payment without source-contract omits the attribute"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)]
+
+      (sut/record-payment conn contract-id 50000M #inst "2024-01-15"
+                          "PAY-001" "test-user")
+
+      (let [db (d/db conn)
+            payments (contract/get-payments db contract-id)]
+        (is (nil? (:payment/source-contract (first payments))))))))

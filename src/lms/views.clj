@@ -374,6 +374,7 @@
       .tx-event.type-boarding::before { background: #6b7280; }
       .tx-event.type-disbursement::before { background: #3b82f6; }
       .tx-event.type-deposit::before { background: #8b5cf6; }
+      .tx-event.type-principal-allocation::before { background: #f97316; }
       .tx-event.type-reversed, .tx-event.type-retracted {
         opacity: 0.7;
       }
@@ -396,6 +397,7 @@
       .tx-type-boarding { color: #6b7280; }
       .tx-type-disbursement { color: #2563eb; }
       .tx-type-deposit { color: #7c3aed; }
+      .tx-type-principal-allocation { color: #ea580c; }
       .tx-retraction-reason {
         display: inline-block;
         font-size: 0.6875rem;
@@ -810,6 +812,7 @@
                     "type-reversal"      ;; reuse reversal styling for refunds (orange)
                     "type-disbursement")
     :deposit "type-deposit"
+    :principal-allocation "type-principal-allocation"
     :admin "type-boarding"
     "type-boarding"))
 
@@ -822,6 +825,7 @@
     :disbursement (case (:sub-type event)
                     :funding "Disbursement (Funding)"
                     :refund "Refund"
+                    :excess-return "Excess Return"
                     "Disbursement")
     :deposit (case (:sub-type event)
                :received "Deposit Received"
@@ -829,6 +833,7 @@
                :offset "Deposit Offset"
                :transfer "Deposit Transfer"
                "Deposit")
+    :principal-allocation "Principal Allocation"
     :admin (case (:type event)
              :boarding "Boarding"
              :rate-adjustment "Rate Adjustment"
@@ -1132,6 +1137,68 @@
         :style "background-color: #f59e0b;"}
        "Retract Payment"]]]]])
 
+(defn retract-contract-modal
+  "Render modal for retracting a contract (data correction).
+
+   Retracts the contract and ALL associated entities (fees, installments,
+   payments, disbursements, deposits, principal-allocations) in a single
+   atomic transaction. Datomic history preserves all retracted datoms.
+
+   Args:
+   - contract-id: UUID of contract
+   - external-id: External ID for display
+
+   Returns: Hiccup modal"
+  [contract-id external-id]
+  [:div#retract-contract-modal.modal
+   [:div.modal-content
+    [:div.modal-header
+     [:h3 {:style "color: #991b1b;"} "Delete Contract"]]
+    [:form {:method "post"
+            :action (str "/contracts/" contract-id "/retract-contract")}
+     [:div {:style "padding: 1rem; margin-bottom: 1rem; border-radius: 0.375rem; background-color: #fef2f2; border: 1px solid #fca5a5;"}
+      [:p {:style "font-weight: 600; color: #991b1b; margin-bottom: 0.5rem;"}
+       "This will permanently retract the following contract and all its data:"]
+      [:p {:style "font-family: ui-monospace, monospace; font-size: 1.125rem; color: #111827; font-weight: 700;"}
+       external-id]
+      [:ul {:style "margin-top: 0.75rem; margin-left: 1.5rem; font-size: 0.875rem; color: #991b1b;"}
+       [:li "Contract record"]
+       [:li "All fees"]
+       [:li "All installments"]
+       [:li "All payments"]
+       [:li "All disbursements"]
+       [:li "All deposits"]
+       [:li "All principal allocations"]]]
+     [:p {:style "font-size: 0.875rem; color: #6b7280; margin-bottom: 1rem;"}
+      "Use this only for data corrections (contract boarded in error, duplicate, wrong customer). "
+      "Datomic history preserves retracted data for audit purposes."]
+     [:div.form-group
+      [:label {:for "retract-contract-reason"} "Reason for Correction *"]
+      [:select {:id "retract-contract-reason"
+                :name "reason"
+                :required true
+                :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;"}
+       [:option {:value ""} "Select reason..."]
+       [:option {:value "correction"} "Correction (wrong data)"]
+       [:option {:value "duplicate-removal"} "Duplicate Removal"]
+       [:option {:value "erroneous-entry"} "Erroneous Entry (wrong customer/contract)"]]]
+     [:div.form-group
+      [:label {:for "retract-contract-note"} "Note (Optional)"]
+      [:textarea {:id "retract-contract-note"
+                  :name "note"
+                  :rows "2"
+                  :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem; font-family: inherit;"
+                  :placeholder "e.g., Contract boarded against wrong customer CR-456"}]]
+     [:div.modal-actions
+      [:button.btn.btn-secondary
+       {:type "button"
+        :onclick "document.getElementById('retract-contract-modal').classList.remove('active')"}
+       "Cancel"]
+      [:button.btn
+       {:type "submit"
+        :style "background-color: #dc2626; color: white;"}
+       "Delete Contract"]]]]])
+
 (defn settlement-form
   "Render settlement calculator modal with HTMX-powered inline results.
 
@@ -1191,6 +1258,173 @@
        "Calculate"]]]
     [:div#settlement-result-area]]])
 
+(defn origination-form
+  "Render origination modal with system-calculated funding breakdown.
+
+   Computes the funding allocation from contract state:
+   - Fee deduction = outstanding fees (not yet covered by pre-payments)
+   - Deposit from funding = security deposit minus deposits already held
+   - Disbursement = principal minus deductions
+   - Excess return = customer credit balance (overpayment beyond fees)
+
+   The user provides only the origination date and wire reference.
+   Amounts are derived, not entered.
+
+   Args:
+   - contract-id: UUID of contract
+   - state: Contract state map from contract/contract-state
+
+   Returns: Hiccup modal div"
+  [contract-id state]
+  (let [contract (:contract state)
+        principal (or (:principal contract) 0M)
+        security-deposit (or (:security-deposit-required contract) 0M)
+        fee-deduction (max 0M (- (or (:total-fees-due state) 0M)
+                                  (or (:total-fees-paid state) 0M)))
+        deposit-held (or (:deposit-held state) 0M)
+        deposit-from-funding (max 0M (- security-deposit deposit-held))
+        disbursement-amount (max 0M (- principal fee-deduction deposit-from-funding))
+        credit-balance (or (:credit-balance state) 0M)
+        excess-return (if (pos? credit-balance) credit-balance 0M)
+        disb-iban (:disbursement-iban contract)
+        disb-bank (:disbursement-bank contract)
+        fmt-val (fn [n] (format "%.2f" (double n)))]
+    [:div#origination-modal.modal
+     [:div.modal-content
+      [:div.modal-header
+       [:h3 "Originate Contract"]]
+      [:p {:style "font-size: 0.875rem; color: #6b7280; margin-bottom: 1rem;"}
+       "Funding breakdown calculated from contract terms and pre-payments."]
+
+      ;; Funding allocation preview
+      [:div.preview-section
+       [:h4 "Funding Allocation"]
+       [:div.preview-item
+        [:div.label "Principal"]
+        [:div.value (str "SAR " (format-money principal))]]
+       (when (pos? fee-deduction)
+         [:div.preview-item
+          [:div.label "Less: Fee deduction (outstanding fees)"]
+          [:div.value (str "SAR " (format-money fee-deduction))]])
+       (when (pos? deposit-from-funding)
+         [:div.preview-item
+          [:div.label "Less: Deposit from funding"]
+          [:div.value (str "SAR " (format-money deposit-from-funding))]])
+       [:div.preview-item {:style "font-weight: bold; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 2px solid #d1d5db;"}
+        [:div.label "Merchant Disbursement"]
+        [:div.value (str "SAR " (format-money disbursement-amount))]]
+       (when (pos? excess-return)
+         [:div.preview-item
+          [:div.label "Plus: Excess return to customer"]
+          [:div.value (str "SAR " (format-money excess-return))]])]
+
+      ;; Form — computed amounts as hidden inputs, user provides date + reference
+      [:form {:method "post"
+              :action (str "/contracts/" contract-id "/originate")}
+       (when (pos? fee-deduction)
+         [:input {:type "hidden" :name "fee-deduction" :value (fmt-val fee-deduction)}])
+       (when (pos? deposit-from-funding)
+         [:input {:type "hidden" :name "deposit-from-funding" :value (fmt-val deposit-from-funding)}])
+       [:input {:type "hidden" :name "disbursement-amount" :value (fmt-val disbursement-amount)}]
+       (when (pos? excess-return)
+         [:input {:type "hidden" :name "excess-return" :value (fmt-val excess-return)}])
+
+       [:div {:style "border-top: 1px solid #e5e7eb; padding-top: 1rem; margin-top: 1rem;"}
+        [:div.form-group
+         [:label {:for "orig-date"} "Origination Date *"]
+         [:input {:type "date"
+                  :id "orig-date"
+                  :name "date"
+                  :required true
+                  :value (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") (java.util.Date.))}]]
+        [:div.form-group
+         [:label {:for "orig-disb-reference"} "Wire Reference *"]
+         [:input {:type "text"
+                  :id "orig-disb-reference"
+                  :name "disbursement-reference"
+                  :required true
+                  :placeholder "e.g., WT-001"}]]
+        [:div {:style "display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"}
+         [:div.form-group
+          [:label {:for "orig-disb-iban"} "Destination IBAN"]
+          [:input {:type "text"
+                   :id "orig-disb-iban"
+                   :name "disbursement-iban"
+                   :value (or disb-iban "")
+                   :placeholder "e.g., SA242000..."}]]
+         [:div.form-group
+          [:label {:for "orig-disb-bank"} "Destination Bank"]
+          [:input {:type "text"
+                   :id "orig-disb-bank"
+                   :name "disbursement-bank"
+                   :value (or disb-bank "")
+                   :placeholder "e.g., ANB"}]]]]
+
+       [:div.modal-actions
+        [:button.btn.btn-secondary
+         {:type "button"
+          :onclick "document.getElementById('origination-modal').classList.remove('active')"}
+         "Cancel"]
+        [:button.btn.btn-success
+         {:type "submit"}
+         "Originate"]]]]]))
+
+(defn retract-origination-modal
+  "Render modal for retracting origination entities (data correction).
+
+   Retracts all origination-created entities: principal allocations,
+   funding disbursements, deposits from funding, and excess returns.
+   Datomic history preserves all retracted datoms for audit.
+
+   Args:
+   - contract-id: UUID of contract
+
+   Returns: Hiccup modal"
+  [contract-id]
+  [:div#retract-origination-modal.modal
+   [:div.modal-content
+    [:div.modal-header
+     [:h3 {:style "color: #92400e;"} "Retract Origination"]]
+    [:form {:method "post"
+            :action (str "/contracts/" contract-id "/retract-origination")}
+     [:div {:style "padding: 1rem; margin-bottom: 1rem; border-radius: 0.375rem; background-color: #fffbeb; border: 1px solid #fcd34d;"}
+      [:p {:style "font-weight: 600; color: #92400e; margin-bottom: 0.5rem;"}
+       "This will retract all origination entities:"]
+      [:ul {:style "margin-left: 1.5rem; font-size: 0.875rem; color: #92400e;"}
+       [:li "Principal allocations (fee deductions from funding)"]
+       [:li "Funding disbursements"]
+       [:li "Deposits from funding"]
+       [:li "Excess return disbursements"]]]
+     [:p {:style "font-size: 0.875rem; color: #6b7280; margin-bottom: 1rem;"}
+      "Use this only for data corrections (wrong amounts, duplicate origination). "
+      "Datomic history preserves retracted data for audit purposes."]
+     [:div.form-group
+      [:label {:for "retract-orig-reason"} "Reason for Correction *"]
+      [:select {:id "retract-orig-reason"
+                :name "reason"
+                :required true
+                :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;"}
+       [:option {:value ""} "Select reason..."]
+       [:option {:value "correction"} "Correction (wrong amounts)"]
+       [:option {:value "duplicate-removal"} "Duplicate Origination"]
+       [:option {:value "erroneous-entry"} "Erroneous Entry"]]]
+     [:div.form-group
+      [:label {:for "retract-orig-note"} "Note (Optional)"]
+      [:textarea {:id "retract-orig-note"
+                  :name "note"
+                  :rows "2"
+                  :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem; font-family: inherit;"
+                  :placeholder "e.g., Wrong fee deduction amount, re-originating"}]]
+     [:div.modal-actions
+      [:button.btn.btn-secondary
+       {:type "button"
+        :onclick "document.getElementById('retract-origination-modal').classList.remove('active')"}
+       "Cancel"]
+      [:button.btn
+       {:type "submit"
+        :style "background-color: #f59e0b; color: white;"}
+       "Retract Origination"]]]]])
+
 (defn contract-detail-page
   "Render contract detail page.
 
@@ -1210,6 +1444,15 @@
        [:div {:style "margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;"}
         [:a.btn.btn-secondary {:href "/contracts"} "\u2190 Back to Contracts"]
         [:div {:style "display: flex; gap: 0.5rem;"}
+         [:button.btn.btn-success
+          {:type "button"
+           :onclick "document.getElementById('origination-modal').classList.add('active')"}
+          "Originate"]
+         [:button.btn
+          {:type "button"
+           :style "background-color: #f59e0b; color: white;"
+           :onclick "document.getElementById('retract-origination-modal').classList.add('active')"}
+          "Retract Origination"]
          [:button.btn.btn-settlement
           {:type "button"
            :onclick "document.getElementById('settlement-modal').classList.add('active')"}
@@ -1217,14 +1460,22 @@
          [:button.btn.btn-primary
           {:type "button"
            :onclick "document.getElementById('payment-modal').classList.add('active')"}
-          "+ Record Payment"]]]
+          "+ Record Payment"]
+         [:button.btn
+          {:type "button"
+           :style "background-color: #dc2626; color: white;"
+           :onclick "document.getElementById('retract-contract-modal').classList.add('active')"}
+          "Delete Contract"]]]
        (contract-summary state)
        (fees-table (:fees state))
        (installments-table (:installments state))
        (transaction-log events)
        (payment-form contract-id)
        (retract-payment-modal contract-id)
+       (retract-contract-modal contract-id (get-in state [:contract :external-id]))
        (settlement-form contract-id)
+       (origination-form contract-id state)
+       (retract-origination-modal contract-id)
        ;; JavaScript for modal handling
        [:script "
          function showRetractPaymentModal(paymentId, reference, amount) {

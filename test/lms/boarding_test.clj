@@ -502,3 +502,99 @@
         (is (= 200000M (get-in state [:contract :principal])))
         (is (= 2 (count (:installments state))))
         (is (= 211000M (:total-outstanding state)))))))
+
+;; ============================================================
+;; Origination Tests
+;; ============================================================
+
+(deftest originate-full-flow-test
+  (testing "Originate executes funding-day operations and settles fees"
+    (let [conn (get-test-conn)
+          ;; Board a contract with a 1,000 fee
+          result (sut/board-new-contract conn
+                   (assoc valid-contract-data :contract/external-id "ORIG-001"
+                                             :contract/security-deposit 10000M)
+                   valid-fees valid-installments "test-user")
+          contract-id (:contract-id result)]
+
+      (is (true? (:success? result)))
+
+      ;; Originate: fee deduction (1K) + deposit from funding (10K) + disbursement (189K)
+      (let [orig-result (sut/originate conn contract-id
+                          {:date #inst "2024-01-15"
+                           :fee-deduction 1000M
+                           :deposit-from-funding 10000M
+                           :disbursement-amount 189000M
+                           :disbursement-reference "WT-001"}
+                          "test-user")]
+
+        (is (true? (:success? orig-result)))
+        (is (= [:principal-allocation :deposit-from-funding :disbursement]
+               (:steps orig-result)))
+
+        ;; Verify contract state: fee should be paid
+        (let [db (d/db conn)
+              state (contract/contract-state db contract-id #inst "2024-06-15")]
+          (is (every? #(= :paid (:status %)) (:fees state)))
+          (is (= 1000M (:total-fees-paid state)))
+          (is (= 10000M (:deposit-held state))))
+
+        ;; Verify funding breakdown balances
+        (let [db (d/db conn)
+              facts (contract/query-facts db contract-id)
+              breakdown (contract/funding-breakdown
+                          (:contract facts)
+                          (:principal-allocations facts)
+                          (:deposits facts)
+                          (:disbursements facts))]
+          (is (= 1000M (:fee-deductions breakdown)))
+          (is (= 10000M (:deposit-from-funding breakdown)))
+          (is (= 189000M (:merchant-disbursement breakdown)))
+          (is (= 200000M (:total-allocated breakdown)))
+          (is (true? (:balanced? breakdown))))))))
+
+(deftest originate-with-excess-return-test
+  (testing "Originate with customer excess return"
+    (let [conn (get-test-conn)
+          result (sut/board-new-contract conn
+                   (assoc valid-contract-data :contract/external-id "ORIG-002")
+                   valid-fees valid-installments "test-user")
+          contract-id (:contract-id result)]
+
+      ;; Customer pre-paid 5K towards fee (only 1K needed → 4K excess)
+      (ops/record-payment conn contract-id 5000M #inst "2024-01-10"
+                          "APP-PREPAY" "test-user")
+
+      ;; Originate: no fee deduction needed (pre-paid), disbursement + excess
+      (let [orig-result (sut/originate conn contract-id
+                          {:date #inst "2024-01-15"
+                           :disbursement-amount 196000M
+                           :disbursement-reference "WT-002"
+                           :excess-return 4000M}
+                          "test-user")]
+
+        (is (true? (:success? orig-result)))
+        (is (= [:disbursement :excess-return] (:steps orig-result)))
+
+        ;; Fee paid from customer payment, excess returned
+        (let [db (d/db conn)
+              state (contract/contract-state db contract-id #inst "2024-06-15")]
+          (is (every? #(= :paid (:status %)) (:fees state))))))))
+
+(deftest originate-minimal-test
+  (testing "Originate with only mandatory disbursement (no deductions)"
+    (let [conn (get-test-conn)
+          result (sut/board-new-contract conn
+                   (assoc valid-contract-data :contract/external-id "ORIG-003")
+                   [] ;; no fees
+                   valid-installments "test-user")
+          contract-id (:contract-id result)
+          ;; No fees, no deposits — just disburse the full principal
+          orig-result (sut/originate conn contract-id
+                        {:date #inst "2024-01-15"
+                         :disbursement-amount 200000M
+                         :disbursement-reference "WT-003"}
+                        "test-user")]
+
+      (is (true? (:success? orig-result)))
+      (is (= [:disbursement] (:steps orig-result))))))

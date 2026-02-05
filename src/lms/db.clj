@@ -126,6 +126,15 @@
     :db/cardinality :db.cardinality/one
     :db/doc         "Virtual IBAN assigned for payment collection."}
 
+   ;; Contractual net amount
+   {:db/ident       :contract/net-disbursement
+    :db/valueType   :db.type/bigdec
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Net financing amount (صافي مبلغ التمويل) from signed contract.
+                     Contractual fact — what was agreed after fee deductions.
+                     Derivable as principal - fees, but stored because it appears on
+                     the signed contract and serves as reconciliation reference."}
+
    ;; Refinancing - relationship to prior contract
    {:db/ident       :contract/refinances
     :db/valueType   :db.type/ref
@@ -288,6 +297,14 @@
     :db/cardinality :db.cardinality/one
     :db/doc         "How payment arrived (bank-transfer, check, cash, etc.)"}
 
+   {:db/ident       :payment/source-contract
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Contract that funded this payment. Links inter-contract fund flows
+                     (e.g., refi settlement where new contract pays off old).
+                     Business fact — backed by signed refinancing agreement.
+                     Same pattern as deposit/target-contract on deposit entities."}
+
    ;; ════════════════════════════════════════════════════════════
    ;; DISBURSEMENT (money OUT — business entity)
    ;; ════════════════════════════════════════════════════════════
@@ -306,7 +323,10 @@
    {:db/ident       :disbursement/type
     :db/valueType   :db.type/keyword
     :db/cardinality :db.cardinality/one
-    :db/doc         "Disbursement type: :funding (loan disbursement) or :refund (money returned)"}
+    :db/doc         "Disbursement type:
+                     :funding       — loan disbursement to merchant (from principal)
+                     :refund        — money returned to customer (reduces waterfall)
+                     :excess-return — application excess returned (does NOT affect waterfall)"}
 
    {:db/ident       :disbursement/amount
     :db/valueType   :db.type/bigdec
@@ -383,6 +403,53 @@
     :db/valueType   :db.type/string
     :db/cardinality :db.cardinality/one
     :db/doc         "External reference for deposit event"}
+
+   {:db/ident       :deposit/source
+    :db/valueType   :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Source of deposit funds: :funding (from principal) or :customer.
+                     Only meaningful for type :received. Omitted when source is obvious
+                     from context or for non-received deposit types."}
+
+   ;; ════════════════════════════════════════════════════════════
+   ;; PRINCIPAL ALLOCATION (fees deducted from funding — waterfall source)
+   ;; ════════════════════════════════════════════════════════════
+   ;; Money from the principal allocated to settle waterfall obligations
+   ;; (fees/costs) at origination. This is NOT a payment (no money from
+   ;; outside) and NOT a fee attribute (the fee doesn't know how it was
+   ;; settled). It's its own concept: an allocation of principal funds.
+   ;;
+   ;; Flows through waterfall as a 4th source alongside payments,
+   ;; refund disbursements, and deposit offsets.
+   ;; Always positive amounts. Errors are retracted.
+
+   {:db/ident       :principal-allocation/id
+    :db/valueType   :db.type/uuid
+    :db/unique      :db.unique/identity
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Unique identifier for principal allocation"}
+
+   {:db/ident       :principal-allocation/amount
+    :db/valueType   :db.type/bigdec
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Amount allocated from principal to settle waterfall obligations (SAR).
+                     Always positive. Covers fees/costs deducted from principal at
+                     origination. Deposit deductions are handled by deposit entities."}
+
+   {:db/ident       :principal-allocation/date
+    :db/valueType   :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Business date of allocation (typically origination date)."}
+
+   {:db/ident       :principal-allocation/contract
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Contract whose principal was allocated."}
+
+   {:db/ident       :principal-allocation/reference
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc         "External reference or description."}
 
    ;; ════════════════════════════════════════════════════════════
    ;; TRANSACTION METADATA (recording facts — on Datomic tx entity)
