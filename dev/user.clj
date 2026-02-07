@@ -66,10 +66,9 @@
                               :contract/external-id "VERIFY-001"
                               :contract/customer-name "Test Customer Co."
                               :contract/customer-id "CR-999999"
-                              :contract/status :active
+                              :contract/disbursed-at #inst "2024-01-02"
                               :contract/start-date #inst "2024-01-01"
-                              :contract/maturity-date #inst "2024-12-31"
-                              :contract/principal 1200000M
+                                                            :contract/principal 1200000M
                               :contract/security-deposit 60000M}
 
                              ;; Fee
@@ -193,10 +192,9 @@
                            :contract/external-id "SAMPLE-001"
                            :contract/customer-name "ABC Trading Company"
                            :contract/customer-id "CR-100001"
-                           :contract/status :active
+                           :contract/disbursed-at #inst "2024-01-02"
                            :contract/start-date #inst "2024-01-01"
-                           :contract/maturity-date #inst "2024-12-31"
-                           :contract/principal 1200000M
+                                                      :contract/principal 1200000M
                            :contract/security-deposit 60000M}
                           [{:fee/id (random-uuid)
                             :fee/type :management
@@ -220,10 +218,9 @@
                            :contract/external-id "SAMPLE-002"
                            :contract/customer-name "XYZ Manufacturing Ltd"
                            :contract/customer-id "CR-100002"
-                           :contract/status :active
+                           :contract/disbursed-at #inst "2024-01-02"
                            :contract/start-date #inst "2023-06-01"
-                           :contract/maturity-date #inst "2024-05-31"
-                           :contract/principal 800000M
+                                                      :contract/principal 800000M
                            :contract/security-deposit 40000M}
                           [{:fee/id (random-uuid)
                             :fee/type :management
@@ -256,10 +253,9 @@
                            :contract/external-id "SAMPLE-003"
                            :contract/customer-name "Quick Loans Co"
                            :contract/customer-id "CR-100003"
-                           :contract/status :active
+                           :contract/disbursed-at #inst "2024-01-02"
                            :contract/start-date #inst "2024-01-01"
-                           :contract/maturity-date #inst "2024-06-30"
-                           :contract/principal 300000M
+                                                      :contract/principal 300000M
                            :contract/security-deposit 15000M}
                           [{:fee/id (random-uuid)
                             :fee/type :management

@@ -26,6 +26,22 @@
       conn)))
 
 ;; ============================================================
+;; Borrower Party Fixture
+;; ============================================================
+
+(defn create-test-borrower
+  "Create a company party for use as borrower in tests.
+   Returns the party UUID."
+  [conn party-name cr-number]
+  (let [party-id (random-uuid)]
+    (d/transact conn
+                {:tx-data [{:party/id party-id
+                            :party/type :party.type/company
+                            :party/legal-name party-name
+                            :party/cr-number cr-number}]})
+    party-id))
+
+;; ============================================================
 ;; Helper: Bullet / Balloon Schedule (WakeCap-like)
 ;; ============================================================
 
@@ -56,21 +72,21 @@
              :installment/remaining-principal principal
              :installment/principal-due (if (= i 12) principal 0M)
              :installment/profit-due profit}))]
-    (d/transact conn
-                {:tx-data (concat
-                            [{:db/id "contract"
-                              :contract/id contract-id
-                              :contract/external-id "WAKECAP-001"
-                              :contract/customer-name "WakeCap Saudi"
-                              :contract/customer-id "CR-7016779188"
-                              :contract/status :active
-                              :contract/start-date start-date
-                              :contract/principal principal}
-                             {:db/id "datomic.tx"
-                              :tx/type :boarding
-                              :tx/contract "contract"
-                              :tx/author "test"}]
-                            installments)})
+    (let [borrower-id (create-test-borrower conn "WakeCap Saudi" "CR-7016779188")]
+      (d/transact conn
+                  {:tx-data (concat
+                              [{:db/id "contract"
+                                :contract/id contract-id
+                                :contract/external-id "WAKECAP-001"
+                                :contract/borrower [:party/id borrower-id]
+                                :contract/disbursed-at start-date
+                                :contract/start-date start-date
+                                :contract/principal principal}
+                               {:db/id "datomic.tx"
+                                :tx/type :boarding
+                                :tx/contract "contract"
+                                :tx/author "test"}]
+                              installments)}))
     contract-id))
 
 ;; ============================================================
@@ -102,21 +118,21 @@
              :installment/remaining-principal remaining
              :installment/principal-due monthly-principal
              :installment/profit-due profit}))]
-    (d/transact conn
-                {:tx-data (concat
-                            [{:db/id "contract"
-                              :contract/id contract-id
-                              :contract/external-id "DIM-001"
-                              :contract/customer-name "Diminishing Co."
-                              :contract/customer-id "CR-DIM-001"
-                              :contract/status :active
-                              :contract/start-date start-date
-                              :contract/principal principal}
-                             {:db/id "datomic.tx"
-                              :tx/type :boarding
-                              :tx/contract "contract"
-                              :tx/author "test"}]
-                            installments)})
+    (let [borrower-id (create-test-borrower conn "Diminishing Co." "CR-DIM-001")]
+      (d/transact conn
+                  {:tx-data (concat
+                              [{:db/id "contract"
+                                :contract/id contract-id
+                                :contract/external-id "DIM-001"
+                                :contract/borrower [:party/id borrower-id]
+                                :contract/disbursed-at start-date
+                                :contract/start-date start-date
+                                :contract/principal principal}
+                               {:db/id "datomic.tx"
+                                :tx/type :boarding
+                                :tx/contract "contract"
+                                :tx/author "test"}]
+                              installments)}))
     contract-id))
 
 ;; ============================================================
@@ -129,15 +145,15 @@
    Principal: 200,000. 2 monthly installments. 100K principal each.
    Profit: 10K each. Remaining-principal: 200K then 100K."
   [conn contract-id]
-  (d/transact conn
-              {:tx-data [{:db/id "contract"
-                          :contract/id contract-id
-                          :contract/external-id (str "SIMPLE-" (subs (str contract-id) 0 8))
-                          :contract/customer-name "Simple Co."
-                          :contract/customer-id "CR-SIMPLE"
-                          :contract/status :active
-                          :contract/start-date #inst "2024-01-01"
-                          :contract/principal 200000M}
+  (let [borrower-id (create-test-borrower conn "Simple Co." "CR-SIMPLE")]
+    (d/transact conn
+                {:tx-data [{:db/id "contract"
+                            :contract/id contract-id
+                            :contract/external-id (str "SIMPLE-" (subs (str contract-id) 0 8))
+                            :contract/borrower [:party/id borrower-id]
+                            :contract/disbursed-at #inst "2024-01-02"
+                            :contract/start-date #inst "2024-01-01"
+                            :contract/principal 200000M}
 
                          {:installment/id (random-uuid)
                           :installment/contract "contract"
@@ -158,7 +174,7 @@
                          {:db/id "datomic.tx"
                           :tx/type :boarding
                           :tx/contract "contract"
-                          :tx/author "test"}]})
+                          :tx/author "test"}]}))
   contract-id)
 
 (defn record-payment [conn contract-id amount reference]

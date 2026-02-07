@@ -21,7 +21,8 @@
   (:require [datomic.client.api :as d]
             [lms.contract :as contract]
             [lms.waterfall :as waterfall]
-            [lms.db :as db]))
+            [lms.db :as db]
+            [lms.dates :as dates]))
 
 ;; ============================================================
 ;; Payment Operations
@@ -636,8 +637,7 @@
    - facility-data: Map with facility attributes:
      - :id (optional, UUID generated if not provided)
      - :external-id (required, LOS reference like PIP-1283621)
-     - :customer-id (required, CR number)
-     - :customer-name (required)
+     - :party-id (required, UUID of party — must be company)
      - :limit (required, approved credit limit in SAR)
      - :funder (optional, funding source code)
      - :status (optional, defaults to :active)
@@ -648,13 +648,12 @@
    Usage:
      (create-facility conn
        {:external-id \"PIP-1283621\"
-        :customer-id \"7016779188\"
-        :customer-name \"WakeCap Saudi\"
+        :party-id #uuid \"...\"
         :limit 10000000M
         :funder \"SKFH\"}
        \"user-1\")"
   [conn facility-data user-id]
-  (doseq [k [:external-id :customer-id :customer-name :limit]]
+  (doseq [k [:external-id :party-id :limit]]
     (when-not (get facility-data k)
       (throw (ex-info (str "Missing required facility field: " k)
                       {:field k :error :missing-required-field}))))
@@ -665,8 +664,7 @@
         facility-entity (cond-> {:db/id "new-facility"
                                  :facility/id facility-id
                                  :facility/external-id (:external-id facility-data)
-                                 :facility/customer-id (:customer-id facility-data)
-                                 :facility/customer-name (:customer-name facility-data)
+                                 :facility/party [:party/id (:party-id facility-data)]
                                  :facility/limit (:limit facility-data)
                                  :facility/status (or (:status facility-data) :active)
                                  :facility/created-at (java.util.Date.)}
@@ -691,15 +689,19 @@
    - Installment entities
    - Boarding transaction
 
+   Contract starts in :pending status (derived). It becomes :active when
+   disbursement is recorded via record-disbursement.
+
    Args:
    - conn: Datomic connection
    - contract-data: Map with contract attributes:
      Required:
-       :contract/id, :contract/external-id, :contract/customer-name,
-       :contract/customer-id, :contract/status, :contract/start-date,
-       :contract/principal
+       :contract/id, :contract/external-id, :contract/borrower,
+       :contract/start-date, :contract/principal
      Optional (enrichments):
        :contract/facility           - ref to facility (for credit line contracts)
+       :contract/guarantors         - ref many to guarantor parties
+       :contract/authorized-signatories - ref many to signatory parties
        :contract/commodity-quantity - Murabaha: commodity quantity
        :contract/commodity-unit-price - Murabaha: unit price
        :contract/commodity-description - Murabaha: description
@@ -707,9 +709,9 @@
        :contract/disbursement-iban  - IBAN for disbursement
        :contract/disbursement-bank  - Bank name for disbursement
        :contract/virtual-iban       - Virtual IBAN for collection
-       :contract/refinances         - ref to contract being refinanced
-     Deprecated:
-       :contract/maturity-date      - now derived from installments
+     Derived (do not pass):
+       :contract/status             - derived from disbursed-at, written-off-at, payments
+       :contract/maturity-date      - derived from last installment's due-date
    - fees: Sequence of fee maps
    - installments: Sequence of installment maps
    - user-id: User performing the operation
@@ -720,13 +722,12 @@
      (board-contract conn
        {:contract/id (random-uuid)
         :contract/external-id \"LOAN-2024-001\"
-        :contract/customer-name \"Customer Co.\"
-        :contract/customer-id \"CR-123\"
-        :contract/status :active
+        :contract/borrower [:party/id borrower-id]
         :contract/start-date #inst \"2024-01-01\"
         :contract/principal 1000000M
         ;; Optional enrichments
         :contract/facility [:facility/id facility-id]
+        :contract/guarantors [[:party/id g1-id]]
         :contract/commodity-description \"Palm Oil\"
         :contract/commodity-quantity 2591.567M
         :contract/commodity-unit-price 3724.585M
@@ -737,16 +738,12 @@
        [{:installment/id (random-uuid) :installment/seq 1 ...}]
        \"user-1\")
 
-   Transaction type: :boarding
-
-   Note: maturity-date is now derived from the last installment's due-date.
-   You should NOT pass :contract/maturity-date - it will be ignored by
-   contract-state which derives it from installments."
+   Transaction type: :boarding"
   [conn contract-data fees installments user-id]
   ;; Validate required contract fields
-  (doseq [k [:contract/id :contract/external-id :contract/customer-name
-             :contract/customer-id :contract/status :contract/start-date
-             :contract/principal]]
+  ;; Note: status is derived, not stored. maturity-date is derived from installments.
+  (doseq [k [:contract/id :contract/external-id :contract/borrower
+             :contract/start-date :contract/principal]]
     (when-not (get contract-data k)
       (throw (ex-info (str "Missing required contract field: " k)
                       {:field k :error :missing-required-field}))))
@@ -779,12 +776,70 @@
 
     (d/transact conn {:tx-data tx-data})))
 
+(defn write-off-contract
+  "Record board-approved write-off decision.
+
+   Sets :contract/written-off-at timestamp. This is a regulatory fact that
+   affects GL entries, SIMAH reporting, and audit trail.
+
+   Write-off requires board approval documented via approval-reference.
+   Once written-off, contract status will derive as :written-off.
+
+   Args:
+   - conn: Datomic connection
+   - contract-id: UUID of contract to write off
+   - approval-reference: Board approval reference (e.g., \"BOARD-2024-001\")
+   - user-id: User performing the operation
+   - note: Optional additional note
+
+   Returns: Transaction result map
+
+   Usage:
+     (write-off-contract conn contract-id \"BOARD-2024-001\" \"user-1\"
+                         :note \"Customer bankruptcy - irrecoverable\")"
+  [conn contract-id approval-reference user-id & {:keys [note]}]
+  (when (empty? approval-reference)
+    (throw (ex-info "Write-off requires board approval reference"
+                    {:contract-id contract-id :error :missing-approval-reference})))
+  (d/transact conn
+              {:tx-data [{:db/id [:contract/id contract-id]
+                          :contract/written-off-at (java.util.Date.)}
+                         {:db/id "datomic.tx"
+                          :tx/type :write-off
+                          :tx/contract [:contract/id contract-id]
+                          :tx/author user-id
+                          :tx/note (str "Board approval: " approval-reference
+                                        (when note (str " - " note)))}]}))
+
+(defn- compute-date-shift
+  "Compute days to shift schedule so first installment lands on expected date.
+
+   Given the disbursement date and the contractual days-to-first-installment,
+   calculates how many days to shift ALL schedule dates.
+
+   Returns: number of days to shift (positive = forward, negative = backward)"
+  [disbursed-at days-to-first installments]
+  (let [first-inst (->> installments
+                        (sort-by :installment/seq)
+                        first)
+        current-first-date (:installment/due-date first-inst)
+        expected-first-date (dates/add-days disbursed-at days-to-first)]
+    (dates/days-between current-first-date expected-first-date)))
+
 (defn record-disbursement
   "Record loan disbursement (funding) to customer.
 
    Creates a disbursement/* entity with type :funding. This records that
    funds were actually transferred to the customer. Funding disbursements
    don't affect the waterfall — they're just the record of loan funding.
+
+   Also sets :contract/disbursed-at to mark the contract as active.
+   Once disbursed, the contract status will derive as :active.
+
+   If the contract has :contract/days-to-first-installment set, all installment
+   due dates are shifted so the first installment falls on
+   disbursed-at + days-to-first-installment. Fee due dates are NOT shifted —
+   they are set explicitly and independent of the installment schedule.
 
    Args:
    - conn: Datomic connection
@@ -806,16 +861,42 @@
   (when-not (pos? amount)
     (throw (ex-info "Disbursement amount must be positive"
                     {:amount amount :error :non-positive-amount})))
-  (d/transact conn
-              {:tx-data [(cond-> {:disbursement/id (random-uuid)
-                                  :disbursement/type :funding
-                                  :disbursement/amount amount
-                                  :disbursement/date date
-                                  :disbursement/contract [:contract/id contract-id]
-                                  :disbursement/reference reference}
-                           iban (assoc :disbursement/iban iban)
-                           bank (assoc :disbursement/bank bank))
-                         (db/recording-metadata user-id)]}))
+  (let [db (d/db conn)
+        contract (d/pull db [:contract/days-to-first-installment] [:contract/id contract-id])
+        days-to-first (:contract/days-to-first-installment contract)
+        installments (contract/get-installments db contract-id)
+
+        ;; Compute shift (0 if days-to-first not set or no installments)
+        shift-days (if (and days-to-first (seq installments))
+                     (compute-date-shift date days-to-first installments)
+                     0)
+
+        ;; Shift all installment due dates (fee due dates are NOT shifted —
+        ;; they are set explicitly by the user and independent of the schedule)
+        installment-updates
+        (when (not= 0 shift-days)
+          (for [inst installments]
+            {:db/id [:installment/id (:installment/id inst)]
+             :installment/due-date
+             (dates/add-days (:installment/due-date inst) shift-days)}))
+
+        disbursement-entity
+        (cond-> {:disbursement/id (random-uuid)
+                 :disbursement/type :funding
+                 :disbursement/amount amount
+                 :disbursement/date date
+                 :disbursement/contract [:contract/id contract-id]
+                 :disbursement/reference reference}
+          iban (assoc :disbursement/iban iban)
+          bank (assoc :disbursement/bank bank))]
+
+    (d/transact conn
+                {:tx-data (concat
+                           [disbursement-entity]
+                           installment-updates
+                           [{:db/id [:contract/id contract-id]
+                             :contract/disbursed-at date}
+                            (db/recording-metadata user-id)])})))
 
 (defn record-refund
   "Record a refund to customer — money returned.
@@ -860,13 +941,16 @@
 ;; ============================================================
 
 (defn record-principal-allocation
-  "Record allocation of principal to settle waterfall obligations (fees).
+  "Record a deduction from principal at origination.
 
-   Creates a principal-allocation/* entity. This records that part of the
-   principal was allocated to pay fees at origination — it's not a payment
-   (no money from outside) and not a fee attribute (the fee doesn't know
-   how it was settled). The allocation flows through the waterfall as a
-   4th source alongside payments, refund disbursements, and deposit offsets.
+   Creates a principal-allocation/* entity. Records that part of the
+   principal was allocated for a specific purpose — fee settlement,
+   deposit, or installment prepayment.
+
+   Type determines waterfall behavior:
+   - :fee-settlement     → flows through waterfall (settles a fee)
+   - :installment-prepayment → flows through waterfall (prepays installments)
+   - :deposit            → does NOT flow through waterfall (deposit ledger is separate)
 
    Args:
    - conn: Datomic connection
@@ -874,6 +958,8 @@
    - amount: Allocation amount (must be positive)
    - date: Business date — typically origination date
    - user-id: User performing the operation
+   - type: Keyword — :fee-settlement, :deposit, or :installment-prepayment
+   - fee-id: Optional UUID of the fee being settled (for :fee-settlement type)
    - reference: Optional external reference or description
    - note: Optional note
 
@@ -882,8 +968,10 @@
    Usage:
      (record-principal-allocation conn contract-id 46687.50M
                                   #inst \"2024-01-15\" \"user-1\"
+                                  :type :fee-settlement
+                                  :fee-id fee-uuid
                                   :reference \"FUNDING-FEE-SETTLEMENT\")"
-  [conn contract-id amount date user-id & {:keys [reference note]}]
+  [conn contract-id amount date user-id & {:keys [reference note fee-id type]}]
   (when-not (pos? amount)
     (throw (ex-info "Principal allocation amount must be positive"
                     {:amount amount :error :non-positive-amount})))
@@ -892,6 +980,8 @@
                                   :principal-allocation/amount amount
                                   :principal-allocation/date date
                                   :principal-allocation/contract [:contract/id contract-id]}
+                           type (assoc :principal-allocation/type type)
+                           fee-id (assoc :principal-allocation/fee [:fee/id fee-id])
                            reference (assoc :principal-allocation/reference reference))
                          (db/recording-metadata user-id :note note)]}))
 
@@ -960,14 +1050,13 @@
                         :funder "SKFH"}
                        "test-user")
 
-  ;; Create a contract under the facility
+  ;; Create a contract under the facility (status is derived, not stored)
   (def contract-id (random-uuid))
   (ops/board-contract conn
                       {:contract/id contract-id
                        :contract/external-id "TEST-001"
                        :contract/customer-name "Test Customer"
                        :contract/customer-id "CR-123"
-                       :contract/status :active
                        :contract/start-date #inst "2024-01-01"
                        :contract/principal 1000000M
                        :contract/security-deposit 50000M

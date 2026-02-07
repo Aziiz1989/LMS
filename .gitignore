@@ -11,7 +11,7 @@ pom.xml.asc
 /.cpcache/
 
 # Clj-kondo
-.clj-kondo/.cache/
+.clj-kondo/
 
 # Editor/IDE
 .calva/

@@ -17,7 +17,8 @@
   (:require [datomic.client.api :as d]
             [lms.waterfall :as waterfall]
             [lms.dates :as dates]
-            [clojure.edn :as edn]))
+            [clojure.edn :as edn]
+            [clojure.string :as str]))
 
 ;; ============================================================
 ;; Query Functions (Fetch Facts)
@@ -82,9 +83,10 @@
    Returns sequence of principal-allocation entity maps, sorted by business date.
    Each map contains: :principal-allocation/id, :principal-allocation/amount,
    :principal-allocation/date, :principal-allocation/contract,
+   :principal-allocation/type (optional), :principal-allocation/fee (optional ref),
    :principal-allocation/reference (optional)"
   [db contract-id]
-  (->> (d/q {:query '[:find (pull ?pa [*])
+  (->> (d/q {:query '[:find (pull ?pa [* {:principal-allocation/fee [:fee/id]}])
                       :in $ ?contract-id
                       :where
                       [?pa :principal-allocation/contract ?c]
@@ -171,43 +173,43 @@
         admin-events (get-admin-events db contract-id)
         retracted-payments (get-retracted-payments db contract-id)]
     (->> (concat
-           (map (fn [p] {:event-type :payment
-                         :id (:payment/id p)
-                         :amount (:payment/amount p)
-                         :date (:payment/date p)
-                         :reference (:payment/reference p)
-                         :channel (:payment/channel p)})
-                payments)
-           (map (fn [d] {:event-type :disbursement
-                         :sub-type (:disbursement/type d)
-                         :id (:disbursement/id d)
-                         :amount (:disbursement/amount d)
-                         :date (:disbursement/date d)
-                         :reference (:disbursement/reference d)})
-                disbursements)
-           (map (fn [d] {:event-type :deposit
-                         :sub-type (:deposit/type d)
-                         :id (:deposit/id d)
-                         :amount (:deposit/amount d)
-                         :date (:deposit/date d)
-                         :reference (:deposit/reference d)})
-                deposits)
-           (map (fn [pa] {:event-type :principal-allocation
-                          :id (:principal-allocation/id pa)
-                          :amount (:principal-allocation/amount pa)
-                          :date (:principal-allocation/date pa)
-                          :reference (:principal-allocation/reference pa)})
-                principal-allocations)
-           (map (fn [rp] {:event-type :retracted-payment
-                          :id (:payment/id rp)
-                          :amount (:payment/amount rp)
-                          :date (:retraction/date rp)
-                          :original-date (:payment/date rp)
-                          :reason (:retraction/reason rp)
-                          :author (:retraction/author rp)
-                          :note (:retraction/note rp)})
-                retracted-payments)
-           admin-events)
+          (map (fn [p] {:event-type :payment
+                        :id (:payment/id p)
+                        :amount (:payment/amount p)
+                        :date (:payment/date p)
+                        :reference (:payment/reference p)
+                        :channel (:payment/channel p)})
+               payments)
+          (map (fn [d] {:event-type :disbursement
+                        :sub-type (:disbursement/type d)
+                        :id (:disbursement/id d)
+                        :amount (:disbursement/amount d)
+                        :date (:disbursement/date d)
+                        :reference (:disbursement/reference d)})
+               disbursements)
+          (map (fn [d] {:event-type :deposit
+                        :sub-type (:deposit/type d)
+                        :id (:deposit/id d)
+                        :amount (:deposit/amount d)
+                        :date (:deposit/date d)
+                        :reference (:deposit/reference d)})
+               deposits)
+          (map (fn [pa] {:event-type :principal-allocation
+                         :id (:principal-allocation/id pa)
+                         :amount (:principal-allocation/amount pa)
+                         :date (:principal-allocation/date pa)
+                         :reference (:principal-allocation/reference pa)})
+               principal-allocations)
+          (map (fn [rp] {:event-type :retracted-payment
+                         :id (:payment/id rp)
+                         :amount (:payment/amount rp)
+                         :date (:retraction/date rp)
+                         :original-date (:payment/date rp)
+                         :reason (:retraction/reason rp)
+                         :author (:retraction/author rp)
+                         :note (:retraction/note rp)})
+               retracted-payments)
+          admin-events)
          (sort-by :date))))
 
 (defn get-fees
@@ -246,17 +248,37 @@
 (defn get-contract
   "Query contract entity by ID.
 
-   Returns contract entity as map, or nil if not found."
+   Returns contract entity as map, or nil if not found.
+   Navigates party refs to include borrower/guarantor/signatory attributes."
   [db contract-id]
-  (d/pull db {:selector '[*]
+  (d/pull db {:selector '[:db/id :contract/id :contract/external-id
+                          :contract/start-date :contract/principal
+                          :contract/security-deposit :contract/step-up-terms
+                          :contract/disbursed-at :contract/written-off-at
+                          :contract/days-to-first-installment
+                          :contract/net-disbursement
+                          :contract/commodity-quantity :contract/commodity-unit-price
+                          :contract/commodity-description :contract/commodity-vendor
+                          :contract/disbursement-iban :contract/disbursement-bank
+                          :contract/virtual-iban
+                          {:contract/facility [:facility/id]}
+                          {:contract/borrower [:party/id :party/type :party/legal-name
+                                               :party/cr-number :party/national-id]}
+                          {:contract/guarantors [:party/id :party/type :party/legal-name
+                                                 :party/cr-number :party/national-id]}
+                          {:contract/authorized-signatories [:party/id :party/type :party/legal-name
+                                                             :party/national-id]}]
               :eid [:contract/id contract-id]}))
 
 (defn get-facility
   "Query facility entity by ID.
 
-   Returns facility entity as map, or nil if not found."
+   Returns facility entity as map, or nil if not found.
+   Navigates :facility/party ref to include party attributes."
   [db facility-id]
-  (d/pull db {:selector '[*]
+  (d/pull db {:selector '[:facility/id :facility/external-id :facility/limit
+                          :facility/funder :facility/status :facility/created-at
+                          {:facility/party [:party/id :party/legal-name :party/cr-number]}]
               :eid [:facility/id facility-id]}))
 
 (defn get-contracts-by-facility
@@ -291,8 +313,7 @@
    Returns map:
    {:id facility-id
     :external-id \"PIP-123\"
-    :customer-id \"...\"
-    :customer-name \"...\"
+    :party {:id uuid :legal-name \"...\" :cr-number \"...\"}
     :limit 10000000M
     :funder \"SKFH\"
     :status :active
@@ -302,16 +323,22 @@
   [db facility-id]
   (let [facility (get-facility db facility-id)
         contracts (get-contracts-by-facility db facility-id)
+        ;; Active = disbursed but not written-off
+        ;; Note: We use disbursed-at/written-off-at facts to determine if active
+        ;; A more complete calculation would also check if fully paid (closed)
         active-principals (->> contracts
-                               (filter #(= :active (:contract/status %)))
+                               (filter #(and (some? (:contract/disbursed-at %))
+                                             (nil? (:contract/written-off-at %))))
                                (map :contract/principal)
                                (filter some?)
                                (reduce + 0M))
         limit (or (:facility/limit facility) 0M)]
     {:id (:facility/id facility)
      :external-id (:facility/external-id facility)
-     :customer-id (:facility/customer-id facility)
-     :customer-name (:facility/customer-name facility)
+     :party (when-let [p (:facility/party facility)]
+              {:id (:party/id p)
+               :legal-name (:party/legal-name p)
+               :cr-number (:party/cr-number p)})
      :limit limit
      :funder (:facility/funder facility)
      :status (:facility/status facility)
@@ -322,7 +349,8 @@
                         {:id (:contract/id c)
                          :external-id (:contract/external-id c)
                          :principal (:contract/principal c)
-                         :status (:contract/status c)})
+                         :disbursed-at (:contract/disbursed-at c)
+                         :written-off-at (:contract/written-off-at c)})
                       contracts)}))
 
 ;; ============================================================
@@ -394,6 +422,13 @@
     (compare (.getTime ^java.util.Date date-a)
              (.getTime ^java.util.Date date-b))))
 
+(defn- waterfall-allocation?
+  "True if this principal-allocation flows through the waterfall.
+   :deposit type does NOT flow through waterfall (deposit ledger is separate).
+   nil type = backward compat (old allocations before type was added)."
+  [pa]
+  (not= :deposit (:principal-allocation/type pa)))
+
 (defn compute-thresholds
   "Compute cumulative payment thresholds for each installment.
 
@@ -409,23 +444,23 @@
    Thresholds: {inst1-id: 105000, inst2-id: 205000}"
   [fees installments]
   (let [tagged-fees (map #(assoc % :_type :fee
-                                   :_amount (:fee/amount %))
+                                 :_amount (:fee/amount %))
                          fees)
         tagged-insts (map #(assoc % :_type :installment
-                                    :_amount (+ (:installment/profit-due %)
-                                                (:installment/principal-due %)))
+                                  :_amount (+ (:installment/profit-due %)
+                                              (:installment/principal-due %)))
                           installments)
         ;; Fees concat first = priority on same due-date (stable sort)
         sorted-items (sort due-date-comparator (concat tagged-fees tagged-insts))]
     (first
      (reduce
-       (fn [[thresholds cumulative] item]
-         (let [new-cumulative (+ cumulative (:_amount item))]
-           (if (= :installment (:_type item))
-             [(assoc thresholds (:installment/id item) new-cumulative) new-cumulative]
-             [thresholds new-cumulative])))
-       [{} 0M]
-       sorted-items))))
+      (fn [[thresholds cumulative] item]
+        (let [new-cumulative (+ cumulative (:_amount item))]
+          (if (= :installment (:_type item))
+            [(assoc thresholds (:installment/id item) new-cumulative) new-cumulative]
+            [thresholds new-cumulative])))
+      [{} 0M]
+      sorted-items))))
 
 (defn find-paid-dates
   "Replay events chronologically to find when each installment became fully paid.
@@ -449,50 +484,103 @@
         waterfall-events
         (concat
           ;; Payments add
-          (map (fn [p] {:delta (:payment/amount p)
-                        :date (:payment/date p)})
-               payments)
+         (map (fn [p] {:delta (:payment/amount p)
+                       :date (:payment/date p)})
+              payments)
           ;; Refund disbursements subtract
-          (->> disbursements
-               (filter #(= :refund (:disbursement/type %)))
-               (map (fn [d] {:delta (- (:disbursement/amount d))
-                             :date (:disbursement/date d)})))
+         (->> disbursements
+              (filter #(= :refund (:disbursement/type %)))
+              (map (fn [d] {:delta (- (:disbursement/amount d))
+                            :date (:disbursement/date d)})))
           ;; Deposit offsets add
-          (->> deposits
-               (filter #(= :offset (:deposit/type %)))
-               (map (fn [d] {:delta (:deposit/amount d)
-                             :date (:deposit/date d)})))
-          ;; Principal allocations add
-          (map (fn [pa] {:delta (:principal-allocation/amount pa)
-                         :date (:principal-allocation/date pa)})
-               principal-allocations))
+         (->> deposits
+              (filter #(= :offset (:deposit/type %)))
+              (map (fn [d] {:delta (:deposit/amount d)
+                            :date (:deposit/date d)})))
+          ;; Principal allocations add (only waterfall types)
+         (->> principal-allocations
+              (filter waterfall-allocation?)
+              (map (fn [pa] {:delta (:principal-allocation/amount pa)
+                             :date (:principal-allocation/date pa)}))))
         all-events (sort-by :date waterfall-events)]
     (:paid-dates
      (reduce
-       (fn [{:keys [running-total paid-dates]} event]
-         (let [new-total (+ running-total (:delta event))
+      (fn [{:keys [running-total paid-dates]} event]
+        (let [new-total (+ running-total (:delta event))
                ;; Only positive deltas (payments/offsets) set paid-date
-               payment-date (when (pos? (:delta event))
-                              (:date event))
-               new-paid-dates
-               (reduce
-                 (fn [dates [inst-id threshold]]
-                   (let [is-paid-now (>= new-total threshold)
-                         was-paid (contains? dates inst-id)]
-                     (cond
-                       (and is-paid-now (not was-paid) payment-date)
-                       (assoc dates inst-id payment-date)
+              payment-date (when (pos? (:delta event))
+                             (:date event))
+              new-paid-dates
+              (reduce
+               (fn [dates [inst-id threshold]]
+                 (let [is-paid-now (>= new-total threshold)
+                       was-paid (contains? dates inst-id)]
+                   (cond
+                     (and is-paid-now (not was-paid) payment-date)
+                     (assoc dates inst-id payment-date)
 
-                       (and (not is-paid-now) was-paid)
-                       (dissoc dates inst-id)
+                     (and (not is-paid-now) was-paid)
+                     (dissoc dates inst-id)
 
-                       :else dates)))
-                 paid-dates
-                 thresholds)]
-           {:running-total new-total
-            :paid-dates new-paid-dates}))
-       {:running-total 0M :paid-dates {}}
-       all-events))))
+                     :else dates)))
+               paid-dates
+               thresholds)]
+          {:running-total new-total
+           :paid-dates new-paid-dates}))
+      {:running-total 0M :paid-dates {}}
+      all-events))))
+
+;; ============================================================
+;; Status Derivation (replaces stored :contract/status)
+;; ============================================================
+
+(defn contract-is-refinanced?
+  "A contract is refinanced if it received a payment funded by another contract.
+
+   Uses :payment/source-contract to detect refinancing payments. When a new contract
+   pays off an old one, the payment on the old contract has source-contract pointing
+   to the new contract.
+
+   Args:
+   - payments: sequence of payment entities for this contract
+
+   Returns: truthy if any payment has :payment/source-contract set"
+  [payments]
+  (some :payment/source-contract payments))
+
+(defn derive-contract-status
+  "Derive contract status from facts.
+
+   Status is purely computed — not stored. Priority order:
+   1. Written off (board decision) → :written-off
+   2. Refinanced (payment from another contract) → :refinanced
+   3. Paid off (no outstanding balance, disbursed) → :closed
+   4. Disbursed (funding sent) → :active
+   5. Not yet disbursed → :pending
+
+   Args:
+   - contract: contract entity map (needs :contract/written-off-at, :contract/disbursed-at)
+   - payments: sequence of payment entities
+   - total-outstanding: computed total outstanding balance (fees + installments)
+
+   Returns: keyword status"
+  [contract payments total-outstanding]
+  (cond
+    (:contract/written-off-at contract)
+    :written-off
+
+    (contract-is-refinanced? payments)
+    :refinanced
+
+    (and (:contract/disbursed-at contract)
+         (zero? total-outstanding))
+    :closed
+
+    (:contract/disbursed-at contract)
+    :active
+
+    :else
+    :pending))
 
 ;; ============================================================
 ;; Contract State — Decomposed Helpers
@@ -519,7 +607,8 @@
    - payment/* → money in (adds)
    - disbursement/* type :refund → money out (subtracts)
    - deposit/* type :offset → applied to balance (adds)
-   - principal-allocation/* → funding allocated to fees (adds)"
+   - principal-allocation/* type :fee-settlement or :installment-prepayment → adds
+   - principal-allocation/* type :deposit → excluded (deposit ledger is separate)"
   [payments disbursements deposits principal-allocations]
   (let [payments-sum (->> payments
                           (map :payment/amount)
@@ -533,6 +622,7 @@
                         (map :deposit/amount)
                         (reduce + 0M))
         allocation-sum (->> principal-allocations
+                            (filter waterfall-allocation?)
                             (map :principal-allocation/amount)
                             (reduce + 0M))]
     (+ (- payments-sum refund-sum) offset-sum allocation-sum)))
@@ -575,6 +665,7 @@
   [contract principal-allocations deposits disbursements]
   (let [principal (:contract/principal contract)
         fee-deductions (->> principal-allocations
+                            (filter #(not= :deposit (:principal-allocation/type %)))
                             (map :principal-allocation/amount)
                             (reduce + 0M))
         deposit-from-funding (->> deposits
@@ -639,8 +730,8 @@
               outstanding (- total-due total-paid)
               paid-date (get paid-dates (:installment/id inst))
               days-delinquent (dates/days-between
-                                (:installment/due-date inst)
-                                (or paid-date as-of))]]
+                               (:installment/due-date inst)
+                               (or paid-date as-of))]]
     {:id (:installment/id inst)
      :seq (:installment/seq inst)
      :due-date (:installment/due-date inst)
@@ -665,7 +756,7 @@
         total-profit-due (reduce + 0M (map :installment/profit-due installments))
         total-profit-paid (reduce + 0M (map :profit-paid enriched-installments))
         total-outstanding (+ (reduce + 0M (map :outstanding enriched-fees))
-                            (reduce + 0M (map :outstanding enriched-installments)))]
+                             (reduce + 0M (map :outstanding enriched-installments)))]
     {:total-fees-due total-fees-due
      :total-fees-paid total-fees-paid
      :total-principal-due total-principal-due
@@ -707,72 +798,110 @@
         totals (compute-totals fees enriched-fees installments enriched-installments)]
 
     (merge
-      {:contract {:id (:contract/id contract)
-                  :external-id (:contract/external-id contract)
-                  :customer-name (:contract/customer-name contract)
-                  :customer-id (:contract/customer-id contract)
-                  :status (:contract/status contract)
-                  :start-date (:contract/start-date contract)
-                  :maturity-date (derive-maturity-date installments)
-                  :principal (:contract/principal contract)
-                  :net-disbursement (:contract/net-disbursement contract)
-                  :security-deposit-required (:contract/security-deposit contract)
-                  :step-up-terms (:contract/step-up-terms contract)
-                  :facility-id (get-in contract [:contract/facility :facility/id])
-                  :commodity {:quantity (:contract/commodity-quantity contract)
-                              :unit-price (:contract/commodity-unit-price contract)
-                              :description (:contract/commodity-description contract)
-                              :vendor (:contract/commodity-vendor contract)}
-                  :disbursement-iban (:contract/disbursement-iban contract)
-                  :disbursement-bank (:contract/disbursement-bank contract)
-                  :virtual-iban (:contract/virtual-iban contract)
-                  :refinances-id (get-in contract [:contract/refinances :contract/id])}
-       :fees enriched-fees
-       :installments enriched-installments
-       :deposit-held deposit-held
-       :credit-balance credit-balance}
-      totals)))
+     {:contract (let [borrower (:contract/borrower contract)]
+                  {:id (:contract/id contract)
+                   :external-id (:contract/external-id contract)
+                   :borrower (when borrower
+                               {:id (:party/id borrower)
+                                :legal-name (:party/legal-name borrower)
+                                :cr-number (:party/cr-number borrower)})
+                   :customer-name (get-in contract [:contract/borrower :party/legal-name])
+                   :guarantors (mapv (fn [g] {:id (:party/id g)
+                                              :legal-name (:party/legal-name g)
+                                              :type (:party/type g)})
+                                     (:contract/guarantors contract))
+                   :authorized-signatories (mapv (fn [s] {:id (:party/id s)
+                                                          :legal-name (:party/legal-name s)})
+                                                 (:contract/authorized-signatories contract))
+                   :status (derive-contract-status contract payments (:total-outstanding totals))
+                   :start-date (:contract/start-date contract)
+                   :maturity-date (derive-maturity-date installments)
+                   :disbursed-at (:contract/disbursed-at contract)
+                   :written-off-at (:contract/written-off-at contract)
+                   :principal (:contract/principal contract)
+                   :net-disbursement (:contract/net-disbursement contract)
+                   :security-deposit-required (:contract/security-deposit contract)
+                   :step-up-terms (:contract/step-up-terms contract)
+                   :days-to-first-installment (:contract/days-to-first-installment contract)
+                   :facility-id (get-in contract [:contract/facility :facility/id])
+                   :commodity {:quantity (:contract/commodity-quantity contract)
+                               :unit-price (:contract/commodity-unit-price contract)
+                               :description (:contract/commodity-description contract)
+                               :vendor (:contract/commodity-vendor contract)}
+                   :disbursement-iban (:contract/disbursement-iban contract)
+                   :disbursement-bank (:contract/disbursement-bank contract)
+                   :virtual-iban (:contract/virtual-iban contract)
+                   :refinanced? (contract-is-refinanced? payments)})
+      :fees enriched-fees
+      :installments enriched-installments
+      :deposit-held deposit-held
+      :credit-balance credit-balance}
+     totals)))
 
 ;; ============================================================
 ;; Query Helpers
 ;; ============================================================
 
+(defn derive-list-status
+  "Derive status for list view: pending, active, or closed.
+
+   Requires total-outstanding to determine if closed.
+   - :pending - not yet disbursed
+   - :closed - disbursed and fully paid (total-outstanding = 0)
+   - :active - disbursed but not fully paid"
+  [disbursed-at total-outstanding]
+  (cond
+    (nil? disbursed-at) :pending
+    (zero? total-outstanding) :closed
+    :else :active))
+
 (defn list-contracts
-  "List all contracts with optional status filter.
+  "List all contracts with derived status.
 
-   Returns sequence of contract summary maps (not full state):
-   {:id ... :external-id ... :customer-name ... :status ...}
+   Returns sequence of contract summary maps:
+   {:id ... :external-id ... :customer-name ... :status ... :disbursed-at ...}
+   Note: :customer-name is sourced from the borrower party's legal name.
 
-   For full state, use contract-state on each ID.
+   Status is derived: :pending, :active, or :closed.
+   Note: This queries payments for each contract to compute total-outstanding.
 
    Args:
-   - db: database value
-   - status-filter: optional keyword (:active, :closed, etc.) or nil for all"
-  [db status-filter]
-  (let [results (if status-filter
-                  (d/q {:query '[:find ?id ?ext-id ?name ?status
-                                 :in $ ?status-filter
-                                 :where
-                                 [?e :contract/id ?id]
-                                 [?e :contract/external-id ?ext-id]
-                                 [?e :contract/customer-name ?name]
-                                 [?e :contract/status ?status]
-                                 [(= ?status ?status-filter)]]
-                        :args [db status-filter]})
-                  (d/q {:query '[:find ?id ?ext-id ?name ?status
-                                 :in $
-                                 :where
-                                 [?e :contract/id ?id]
-                                 [?e :contract/external-id ?ext-id]
-                                 [?e :contract/customer-name ?name]
-                                 [?e :contract/status ?status]]
-                        :args [db]}))]
+   - db: database value"
+  [db]
+  (let [results (d/q {:query '[:find (pull ?e [:contract/id
+                                               :contract/external-id
+                                               :contract/disbursed-at
+                                               {:contract/borrower [:party/legal-name]}])
+                               :in $
+                               :where
+                               [?e :contract/id _]]
+                      :args [db]})]
     (->> results
-         (map (fn [[id ext-id name status]]
-                {:id id
-                 :external-id ext-id
-                 :customer-name name
-                 :status status}))
+         (map first)
+         (map (fn [c]
+                (let [contract-id (:contract/id c)
+                      ;; Query facts needed for status derivation
+                      fees (get-fees db contract-id)
+                      installments (get-installments db contract-id)
+                      payments (get-payments db contract-id)
+                      disbursements (get-disbursements db contract-id)
+                      deposits (get-deposits db contract-id)
+                      principal-allocations (get-principal-allocations db contract-id)
+                      ;; Compute total for waterfall
+                      total-payments (compute-waterfall-total payments disbursements
+                                                              deposits principal-allocations)
+                      ;; Run waterfall to get allocations
+                      {:keys [allocations]} (waterfall/waterfall fees installments total-payments)
+                      ;; Compute totals
+                      enriched-fees (enrich-fees fees allocations)
+                      enriched-installments (enrich-installments installments allocations {} (java.util.Date.))
+                      totals (compute-totals fees enriched-fees installments enriched-installments)]
+                  {:id contract-id
+                   :external-id (:contract/external-id c)
+                   :customer-name (get-in c [:contract/borrower :party/legal-name])
+                   :status (derive-list-status (:contract/disbursed-at c)
+                                               (:total-outstanding totals))
+                   :disbursed-at (:contract/disbursed-at c)})))
          (sort-by :external-id))))
 
 (defn parse-step-up-terms
@@ -788,6 +917,275 @@
     (edn/read-string terms-str)))
 
 ;; ============================================================
+;; Comprehensive History (Datom-level Audit Trail)
+;; ============================================================
+
+(defn- build-attr-ident-map
+  "Build map from Datomic attribute entity IDs to their ident keywords.
+   Used to resolve attribute entity IDs from tx-range datoms."
+  [db]
+  (into {} (d/q {:query '[:find ?e ?ident :where [?e :db/ident ?ident]]
+                 :args [db]})))
+
+(defn get-contract-entity-ids
+  "Get all entity IDs (db/id) associated with a contract.
+   Queries history DB to include entities that were later retracted."
+  [db contract-id]
+  (let [hdb (d/history db)
+        ;; Find the contract entity first
+        contract-eids (d/q {:query '[:find ?e
+                                     :in $ ?cid
+                                     :where [?e :contract/id ?cid]]
+                            :args [hdb contract-id]})
+        ;; Then find all child entities (all or-branches use same vars: ?e ?c)
+        child-eids (when-let [c (ffirst contract-eids)]
+                     (d/q {:query '[:find ?e
+                                    :in $ ?c
+                                    :where
+                                    (or [?e :fee/contract ?c]
+                                        [?e :installment/contract ?c]
+                                        [?e :payment/contract ?c]
+                                        [?e :disbursement/contract ?c]
+                                        [?e :deposit/contract ?c]
+                                        [?e :deposit/target-contract ?c]
+                                        [?e :principal-allocation/contract ?c])]
+                           :args [hdb c]}))]
+    (into #{} (map first) (concat contract-eids child-eids))))
+
+(defn- entity-type-from-attr
+  "Determine entity type keyword from attribute namespace."
+  [attr-ident]
+  (when-let [ns (namespace attr-ident)]
+    (case ns
+      "contract" :contract
+      "installment" :installment
+      "fee" :fee
+      "payment" :payment
+      "disbursement" :disbursement
+      "deposit" :deposit
+      "principal-allocation" :principal-allocation
+      nil)))
+
+(def ^:private internal-attrs
+  "Attributes to exclude from history display."
+  #{:db/txInstant :db/doc :db/ident :db/valueType :db/cardinality :db/unique})
+
+(def ^:private reference-attrs
+  "Attributes that point to parent entities (redundant in contract context)."
+  #{:payment/contract :fee/contract :installment/contract
+    :disbursement/contract :deposit/contract :deposit/target-contract
+    :principal-allocation/contract :contract/facility})
+
+(defn build-entity-label-cache
+  "Build a cache of entity labels by querying the history DB.
+   Returns map of {entity-id {:type :payment :label \"FT-123\" :seq nil :sub-type nil}}."
+  [db entity-ids]
+  (let [hdb (d/history db)
+        ;; Query label attributes from history (covers retracted entities)
+        refs (d/q {:query '[:find ?e ?v
+                            :in $ [?e ...]
+                            :where
+                            (or [?e :payment/reference ?v]
+                                [?e :disbursement/reference ?v]
+                                [?e :deposit/reference ?v]
+                                [?e :principal-allocation/reference ?v]
+                                [?e :contract/external-id ?v])]
+                   :args [hdb (vec entity-ids)]})
+        ref-map (into {} refs)
+        ;; Sequence numbers for installments
+        seqs (d/q {:query '[:find ?e ?v
+                            :in $ [?e ...]
+                            :where [?e :installment/seq ?v]]
+                   :args [hdb (vec entity-ids)]})
+        seq-map (into {} seqs)
+        ;; Fee types
+        fee-types (d/q {:query '[:find ?e ?v
+                                 :in $ [?e ...]
+                                 :where [?e :fee/type ?v]]
+                        :args [hdb (vec entity-ids)]})
+        fee-type-map (into {} fee-types)
+        ;; Sub-types for disbursements and deposits
+        sub-types (d/q {:query '[:find ?e ?v
+                                 :in $ [?e ...]
+                                 :where
+                                 (or [?e :disbursement/type ?v]
+                                     [?e :deposit/type ?v])]
+                        :args [hdb (vec entity-ids)]})
+        sub-type-map (into {} sub-types)]
+    (into {}
+          (for [eid entity-ids]
+            [eid {:label (or (get ref-map eid)
+                             (when-let [s (get seq-map eid)] (str "Installment #" s))
+                             (when-let [ft (get fee-type-map eid)] (str (str/capitalize (name ft)) " Fee")))
+                  :seq (get seq-map eid)
+                  :sub-type (get sub-type-map eid)}]))))
+
+(defn get-comprehensive-history
+  "Query complete Datomic history for all entities associated with a contract.
+
+   Uses d/tx-range to get per-transaction datom data with the added? flag,
+   filtered to datoms belonging to this contract's entities.
+
+   Returns vector of tx maps sorted by timestamp:
+   [{:tx-id       long
+     :tx-instant  #inst \"...\"
+     :tx-metadata {:tx/author \"user\" :tx/type :boarding ...}
+     :changes     [{:entity-id long :entity-type :payment
+                    :attribute :payment/amount :value 50000M :added? true}]}]"
+  [conn db contract-id & [{:keys [entity-types from-date to-date]}]]
+  (let [entity-ids (get-contract-entity-ids db contract-id)]
+    (when (seq entity-ids)
+      (let [attr-idents (build-attr-ident-map db)
+            all-txs (d/tx-range conn {})
+            result
+            (reduce
+             (fn [acc tx-data]
+               (let [data (:data tx-data)
+                      ;; Filter datoms to our contract's entities, excluding noise
+                     relevant
+                     (reduce
+                      (fn [datoms d]
+                        (let [e (nth d 0)
+                              a-eid (nth d 1)
+                              ident (get attr-idents a-eid)]
+                          (if (and (contains? entity-ids e)
+                                   ident
+                                   (not (contains? internal-attrs ident))
+                                   (not (contains? reference-attrs ident))
+                                   (entity-type-from-attr ident)
+                                   (or (nil? entity-types)
+                                       (contains? (set entity-types)
+                                                  (entity-type-from-attr ident))))
+                            (conj datoms {:entity-id e
+                                          :entity-type (entity-type-from-attr ident)
+                                          :attribute ident
+                                          :value (nth d 2)
+                                          :added? (nth d 4)})
+                            datoms)))
+                      []
+                      data)]
+                 (if (seq relevant)
+                   (let [tx-eid (nth (first data) 3)
+                         tx-pull (try
+                                   (d/pull db [:db/txInstant :tx/author :tx/type
+                                               :tx/note :tx/reason] tx-eid)
+                                   (catch Exception _ {}))
+                         tx-instant (:db/txInstant tx-pull)]
+                     (if (and (or (nil? from-date)
+                                  (not (.before ^java.util.Date tx-instant from-date)))
+                              (or (nil? to-date)
+                                  (.before ^java.util.Date tx-instant to-date)))
+                       (conj acc {:tx-id tx-eid
+                                  :tx-instant tx-instant
+                                  :tx-metadata (dissoc tx-pull :db/txInstant :db/id)
+                                  :changes relevant})
+                       acc))
+                   acc)))
+             []
+             all-txs)]
+        (sort-by :tx-instant result)))))
+
+(defn- classify-entity-changes
+  "Classify changes for a single entity within a TX.
+   Pairs assertion+retraction of same attribute as :updated.
+   Returns {:operation :created|:updated|:retracted, :attr-changes [...]}"
+  [changes]
+  (let [by-attr (group-by :attribute changes)
+        attr-changes
+        (vec
+         (for [[attr datoms] by-attr
+               :let [asserted (filter :added? datoms)
+                     retracted (remove :added? datoms)]]
+           {:attribute attr
+            :old-value (first (map :value retracted))
+            :new-value (first (map :value asserted))
+            :operation (cond
+                         (and (seq asserted) (seq retracted)) :updated
+                         (seq asserted) :asserted
+                         :else :retracted)}))
+        all-asserted? (every? #(= :asserted (:operation %)) attr-changes)
+        all-retracted? (every? #(= :retracted (:operation %)) attr-changes)]
+    {:operation (cond all-asserted? :created
+                      all-retracted? :retracted
+                      :else :updated)
+     :attr-changes attr-changes}))
+
+(defn- attribute-display-name
+  "Human-readable name for an attribute ident.
+   :payment/amount -> \"Amount\", :installment/profit-due -> \"Profit Due\"."
+  [attr-ident]
+  (-> (name attr-ident)
+      (str/replace "-" " ")
+      (str/replace #"(?:^|\\s)\\w"
+                   #(str/upper-case %))))
+
+(defn- format-value
+  "Format a Datomic value for human display."
+  [_attr-ident value]
+  (cond
+    (nil? value) nil
+    (instance? java.math.BigDecimal value) (str "SAR " (format "%.2f" (double value)))
+    (instance? java.util.Date value) (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") value)
+    (keyword? value) (str/capitalize (name value))
+    (uuid? value) (subs (str value) 0 8)
+    (string? value) value
+    (number? value) (str value)
+    :else (str value)))
+
+(defn format-history-for-display
+  "Transform raw history into display-ready format.
+
+   Groups changes by entity, pairs assertion/retraction for before->after,
+   classifies operations, enriches with entity labels.
+
+   Args:
+   - raw-history: from get-comprehensive-history
+   - entity-labels: from build-entity-label-cache
+
+   Returns vector of processed tx maps with :entities and :operation keys."
+  [raw-history entity-labels]
+  (vec
+   (for [tx raw-history
+         :let [changes (:changes tx)
+               by-entity (group-by :entity-id changes)
+               entities
+               (vec
+                (for [[eid entity-changes] by-entity
+                      :let [entity-type (:entity-type (first entity-changes))
+                            {:keys [operation attr-changes]}
+                            (classify-entity-changes entity-changes)
+                            label-info (get entity-labels eid)
+                              ;; Format attr changes for display
+                            display-changes
+                            (vec
+                             (for [c attr-changes
+                                   :when (not (#{:asserted :retracted}
+                                               (:operation c))
+                                               ;; Show all for updates, skip identity attrs for create/retract
+                                              )]
+                               (assoc c
+                                      :display-name (attribute-display-name (:attribute c))
+                                      :display-old (format-value (:attribute c) (:old-value c))
+                                      :display-new (format-value (:attribute c) (:new-value c)))))]]
+                  {:entity-id eid
+                   :entity-type entity-type
+                   :label (:label label-info)
+                   :sub-type (:sub-type label-info)
+                   :operation operation
+                   :changes attr-changes
+                   :display-changes display-changes}))
+               tx-operation
+               (cond
+                 (some-> tx :tx-metadata :tx/type) :admin
+                 (some-> tx :tx-metadata :tx/reason) :correction
+                 (every? #(= :created (:operation %)) entities) :created
+                 (every? #(= :retracted (:operation %)) entities) :retracted
+                 :else :updated)]]
+     (assoc tx
+            :entities entities
+            :operation tx-operation))))
+
+;; ============================================================
 ;; Development Examples
 ;; ============================================================
 
@@ -797,15 +1195,22 @@
   (def conn (db/get-connection))
   (db/install-schema conn)
 
+  ;; Create test party (borrower)
+  (require '[lms.party :as party])
+  (def test-party-id (random-uuid))
+  (party/create-party conn {:party/type :party.type/company
+                            :party/legal-name "Test Customer Co."
+                            :party/cr-number "CR-123456"}
+                      "repl-user")
+
   ;; Create test contract with schedule (via operations)
   (def test-contract-id (random-uuid))
 
   (ops/board-contract conn
                       {:contract/id test-contract-id
                        :contract/external-id "TEST-001"
-                       :contract/customer-name "Test Customer Co."
-                       :contract/customer-id "CR-123456"
-                       :contract/status :active
+                       :contract/borrower [:party/id test-party-id]
+                       :contract/disbursed-at #inst "2024-01-02"
                        :contract/start-date #inst "2024-01-01"
                        :contract/principal 1200000M
                        :contract/security-deposit 60000M}
@@ -860,7 +1265,4 @@
   ;;      :outstanding 110000M :status :scheduled}]
 
   ;; List all contracts
-  (list-contracts (d/db conn) nil)
-  (list-contracts (d/db conn) :active)
-
-  )
+  (list-contracts (d/db conn)))

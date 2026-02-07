@@ -150,13 +150,12 @@
 
         ;; Parse contract
         contract-raw (:contract data)
+        ;; Note: status is derived, maturity-date is derived from installments
         contract {:contract/id (random-uuid)
                   :contract/external-id (:external-id contract-raw)
                   :contract/customer-name (:customer-name contract-raw)
                   :contract/customer-id (:customer-id contract-raw)
-                  :contract/status :active
                   :contract/start-date (parse-jira-date (:start-date contract-raw))
-                  :contract/maturity-date (parse-jira-date (:maturity-date contract-raw))
                   :contract/principal (:principal contract-raw)
                   :contract/security-deposit (:security-deposit contract-raw)
                   :contract/step-up-terms (:step-up-terms contract-raw)}

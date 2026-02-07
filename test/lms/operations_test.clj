@@ -22,6 +22,19 @@
   "Fixed date for testing: 2024-06-15 (mid-year)"
   #inst "2024-06-15T00:00:00.000-00:00")
 
+(def test-borrower-id
+  "Fixed UUID for test borrower party."
+  #uuid "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+(defn create-test-borrower
+  "Create a company party for use as borrower in tests."
+  [conn]
+  (d/transact conn
+              {:tx-data [{:party/id test-borrower-id
+                          :party/type :party.type/company
+                          :party/legal-name "Test Customer Co."
+                          :party/cr-number "CR-123456"}]}))
+
 (defn get-test-conn
   "Get a fresh database connection for testing.
    Each call creates a unique database to ensure test isolation."
@@ -37,18 +50,18 @@
 
 (defn create-simple-contract
   "Create a simple contract with 2 installments for testing.
+   Note: status is derived. Contract starts as :pending until disbursement.
+   Creates borrower party if needed.
 
    Returns contract-id."
   [conn]
+  (create-test-borrower conn)
   (let [contract-id (random-uuid)]
     (sut/board-contract conn
                         {:contract/id contract-id
                          :contract/external-id (str "TEST-" (subs (str contract-id) 0 8))
-                         :contract/customer-name "Test Customer Co."
-                         :contract/customer-id "CR-123456"
-                         :contract/status :active
+                         :contract/borrower [:party/id test-borrower-id]
                          :contract/start-date #inst "2024-01-01"
-                         :contract/maturity-date #inst "2024-12-31"
                          :contract/principal 200000M
                          :contract/security-deposit 10000M}
                         [{:fee/id (random-uuid)
@@ -82,15 +95,13 @@
           inst-1-id (random-uuid)
           inst-2-id (random-uuid)]
 
-      ;; Board contract
+      ;; Create borrower party and board contract
+      (create-test-borrower conn)
       (sut/board-contract conn
                           {:contract/id contract-id
                            :contract/external-id "BOARD-TEST-001"
-                           :contract/customer-name "Test Customer"
-                           :contract/customer-id "CR-123"
-                           :contract/status :active
+                           :contract/borrower [:party/id test-borrower-id]
                            :contract/start-date #inst "2024-01-01"
-                           :contract/maturity-date #inst "2024-12-31"
                            :contract/principal 1000000M
                            :contract/security-deposit 50000M}
                           [{:fee/id fee-id
@@ -345,7 +356,7 @@
 
         ;; Contract no longer appears in list-contracts
         (is (empty? (filter #(= contract-id (:id %))
-                            (contract/list-contracts db nil)))))))
+                            (contract/list-contracts db)))))))
 
   (testing "Retract contract with no activity removes contract + schedule only"
     (let [conn (get-test-conn)
@@ -399,22 +410,20 @@
             txs (contract/get-events db-after contract-id)
             rate-txs (filter #(= :rate-adjustment (:type %)) txs)]
         (is (= 1 (count rate-txs)))
-        (is (= "test-user" (:author (first rate-txs)))))))
+        (is (= "test-user" (:author (first rate-txs))))))))
 
 (deftest adjust-rate-multiple-installments-test
   (testing "Adjust rate for range of installments"
     (let [conn (get-test-conn)
           contract-id (random-uuid)]
 
-      ;; Create contract with 4 installments
+      ;; Create borrower party and contract with 4 installments
+      (create-test-borrower conn)
       (sut/board-contract conn
                           {:contract/id contract-id
                            :contract/external-id (str "ADJ-" (subs (str contract-id) 0 8))
-                           :contract/customer-name "Test"
-                           :contract/customer-id "CR-123"
-                           :contract/status :active
+                           :contract/borrower [:party/id test-borrower-id]
                            :contract/start-date #inst "2024-01-01"
-                           :contract/maturity-date #inst "2024-12-31"
                            :contract/principal 400000M
                            :contract/security-deposit 10000M}
                           []
@@ -436,9 +445,9 @@
         ;; Inst 1: unchanged (10,000)
         (is (= 10000M (:installment/profit-due (nth installments 0))))
 
-        ;; Inst 2-3: changed to 666.67
-        (is (= 666.6666666667M (:installment/profit-due (nth installments 1))))
-        (is (= 666.6666666667M (:installment/profit-due (nth installments 2))))
+        ;; Inst 2-3: changed to 2/3 of remaining-principal * rate / 12
+        (is (= 666.6666666M (:installment/profit-due (nth installments 1))))
+        (is (= 666.6666666M (:installment/profit-due (nth installments 2))))
 
         ;; Inst 4: unchanged (10,000)
         (is (= 10000M (:installment/profit-due (nth installments 3))))))))
@@ -507,8 +516,8 @@
         ;; Deposit-held reduced
         (is (= 0M (:deposit-held state-after)))
 
-        ;; Outstanding reduced (fee paid: 1,000, rest to installment 1)
-        (is (= 212000M (:total-outstanding state-after)))
+        ;; Outstanding reduced (fee 1,000 + inst1 profit 9,000 = 10,000 paid)
+        (is (= 211000M (:total-outstanding state-after)))
 
         ;; Fee paid
         (is (= :paid (:status (first (:fees state-after)))))
@@ -537,7 +546,63 @@
             disb-txs (filter #(= :disbursement (:event-type %)) txs)]
         (is (= 1 (count disb-txs)))
         (is (= 200000M (:amount (first disb-txs))))
-        (is (= "WIRE-123" (:reference (first disb-txs)))))))))
+        (is (= "WIRE-123" (:reference (first disb-txs)))))))
+
+  (testing "Record disbursement shifts installment dates but NOT fee dates"
+    (let [conn (get-test-conn)
+          contract-id (random-uuid)
+          fee-id (random-uuid)]
+
+      ;; Board contract WITH days-to-first-installment AND a fee
+      ;; Schedule has first installment on Jan 31 (30 days after Jan 1)
+      (create-test-borrower conn)
+      (sut/board-contract conn
+                          {:contract/id contract-id
+                           :contract/external-id (str "TEST-SHIFT-" (subs (str contract-id) 0 8))
+                           :contract/borrower [:party/id test-borrower-id]
+                           :contract/start-date #inst "2024-01-01"
+                           :contract/principal 200000M
+                           :contract/days-to-first-installment 30}  ;; 30 days after disbursement
+                          [{:fee/id fee-id
+                            :fee/type :management
+                            :fee/amount 5000M
+                            :fee/due-date #inst "2024-05-06"}]  ;; Fee due May 6
+                          [{:installment/id (random-uuid)
+                            :installment/seq 1
+                            :installment/due-date #inst "2024-01-31"  ;; Placeholder date
+                            :installment/principal-due 100000M
+                            :installment/profit-due 10000M
+                            :installment/remaining-principal 200000M}
+                           {:installment/id (random-uuid)
+                            :installment/seq 2
+                            :installment/due-date #inst "2024-02-28"  ;; Placeholder date
+                            :installment/principal-due 100000M
+                            :installment/profit-due 10000M
+                            :installment/remaining-principal 100000M}]
+                          "test-user")
+
+      ;; Disburse on Jan 15 - first installment should shift to Feb 14 (Jan 15 + 30 days)
+      ;; That's a shift of 14 days forward from Jan 31
+      (sut/record-disbursement conn contract-id 200000M #inst "2024-01-15" "WIRE-456" "test-user")
+
+      ;; Verify installment dates were shifted
+      (let [db (d/db conn)
+            installments (contract/get-installments db contract-id)
+            inst1 (first (filter #(= 1 (:installment/seq %)) installments))
+            inst2 (first (filter #(= 2 (:installment/seq %)) installments))]
+        ;; First installment: Jan 15 + 30 = Feb 14
+        (is (= #inst "2024-02-14" (:installment/due-date inst1))
+            "First installment should be 30 days after disbursement")
+        ;; Second installment: Feb 28 + 14 days shift = Mar 13
+        (is (= #inst "2024-03-13" (:installment/due-date inst2))
+            "Second installment should shift by same amount"))
+
+      ;; Verify fee date was NOT shifted
+      (let [db (d/db conn)
+            fees (contract/get-fees db contract-id)
+            fee (first fees)]
+        (is (= #inst "2024-05-06" (:fee/due-date fee))
+            "Fee due date must NOT be shifted by disbursement")))))
 
 ;; ============================================================
 ;; Principal Allocation Tests
@@ -582,6 +647,41 @@
                             #"positive"
                             (sut/record-principal-allocation conn contract-id -100M
                                                              #inst "2024-01-15" "test-user"))))))
+
+(deftest record-typed-principal-allocation-test
+  (testing "Principal allocation with :type and :fee-id stores both attributes"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)
+          fees (contract/get-fees (d/db conn) contract-id)
+          fee-id (:fee/id (first fees))]
+
+      (sut/record-principal-allocation conn contract-id 1000M
+                                       #inst "2024-01-15" "test-user"
+                                       :type :fee-settlement
+                                       :fee-id fee-id
+                                       :reference "FUNDING-FEE-SETTLEMENT")
+
+      (let [db (d/db conn)
+            allocations (contract/get-principal-allocations db contract-id)
+            pa (first allocations)]
+        (is (= 1 (count allocations)))
+        (is (= :fee-settlement (:principal-allocation/type pa)))
+        (is (= fee-id (get-in pa [:principal-allocation/fee :fee/id])))
+        (is (= "FUNDING-FEE-SETTLEMENT" (:principal-allocation/reference pa))))))
+
+  (testing "Principal allocation with :type :deposit stores type"
+    (let [conn (get-test-conn)
+          contract-id (create-simple-contract conn)]
+
+      (sut/record-principal-allocation conn contract-id 10000M
+                                       #inst "2024-01-15" "test-user"
+                                       :type :deposit
+                                       :reference "FUNDING-DEPOSIT")
+
+      (let [db (d/db conn)
+            pa (first (contract/get-principal-allocations db contract-id))]
+        (is (= :deposit (:principal-allocation/type pa)))
+        (is (nil? (:principal-allocation/fee pa)))))))
 
 (deftest record-excess-return-test
   (testing "Record excess return creates disbursement with type :excess-return"

@@ -98,18 +98,33 @@
      ["/board-existing" {:post handlers/board-existing-contract-handler}]
      ["/:id"
       ["" {:get handlers/view-contract-handler}]
+      ["/history-tab" {:get handlers/history-tab-handler}]
       ["/preview-payment" {:post handlers/preview-payment-handler}]
       ["/record-payment" {:post handlers/record-payment-handler}]
       ["/retract-payment" {:post handlers/retract-payment-handler}]
       ["/retract-contract" {:post handlers/retract-contract-handler}]
       ["/calculate-settlement" {:post handlers/calculate-settlement-handler}]
       ["/originate" {:post handlers/originate-handler}]
-      ["/retract-origination" {:post handlers/retract-origination-handler}]]]
+      ["/retract-origination" {:post handlers/retract-origination-handler}]
+      ["/guarantors" {:post handlers/add-guarantor-handler}]
+      ["/guarantors/:party-id/remove" {:post handlers/remove-guarantor-handler}]
+      ["/signatories" {:post handlers/add-signatory-handler}]
+      ["/signatories/:party-id/remove" {:post handlers/remove-signatory-handler}]]]
+    ["/parties"
+     ["" {:get handlers/list-parties-handler
+          :post handlers/create-party-handler}]
+     ["/new" {:get handlers/new-party-handler}]
+     ["/:id"
+      ["" {:get handlers/view-party-handler}]
+      ["/update" {:post handlers/update-party-handler}]
+      ["/ownership" {:post handlers/add-ownership-handler}]
+      ["/ownership/:ownership-id/remove" {:post handlers/remove-ownership-handler}]]]
     ;; Legacy test routes (keep for debugging)
     ["/test" {:get home-page}]
     ["/api"
      ["/time" {:get time-handler}]
-     ["/db-test" {:get db-test-handler}]]]
+     ["/db-test" {:get db-test-handler}]
+     ["/parties/search" {:get handlers/search-parties-handler}]]]
    {:conflicts nil}))
 
 (def app
@@ -130,16 +145,16 @@
 
 (comment
   ;; Start server from REPL
-  (def server (start-server))
+  (def server
+    (start-server)
+    )
 
   ;; Stop server
-  (.stop server) 
+  (.stop server)
   
+
   (defn reload! []
     (require '[lms.core] :reload-all)
     :reloaded)
-  (reload!)
-
-
-  
-)
+  (reload!) 
+  )

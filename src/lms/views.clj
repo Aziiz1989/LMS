@@ -35,7 +35,7 @@
                   :warning {:bg "#fffbeb" :border "#fcd34d" :text "#92400e"}}
           style (get styles type (:success styles))]
       [:div {:style (format "padding: 1rem; margin-bottom: 1rem; border-radius: 0.375rem; background-color: %s; border: 1px solid %s; color: %s;"
-                           (:bg style) (:border style) (:text style))}
+                            (:bg style) (:border style) (:text style))}
        [:div {:style "display: flex; align-items: center; gap: 0.5rem;"}
         [:span {:style "font-weight: 600;"}
          (case type
@@ -82,7 +82,7 @@
          :closed {:bg "#6b7280" :text "white"}}
         style (get status-styles status {:bg "#6b7280" :text "white"})]
     [:span {:style (format "display: inline-block; padding: 0.25rem 0.75rem; border-radius: 0.375rem; font-size: 0.875rem; font-weight: 600; background-color: %s; color: %s;"
-                          (:bg style) (:text style))}
+                           (:bg style) (:text style))}
      (str/upper-case (name status))]))
 
 ;; ============================================================
@@ -622,6 +622,240 @@
       .btn-settlement:hover {
         background-color: #4338ca;
       }
+
+      /* Tabs */
+      .tabs {
+        display: flex;
+        border-bottom: 2px solid #e5e7eb;
+        margin-bottom: 1.5rem;
+        gap: 0;
+      }
+      .tab {
+        padding: 0.75rem 1.5rem;
+        cursor: pointer;
+        font-weight: 600;
+        text-decoration: none;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        color: #6b7280;
+        font-size: 0.9375rem;
+      }
+      .tab:hover { background: #f9fafb; color: #374151; }
+      .tab.active {
+        border-bottom-color: #3b82f6;
+        color: #3b82f6;
+      }
+      .tab-content { display: none; }
+      .tab-content.active { display: block; }
+
+      /* History Timeline */
+      .history-timeline {
+        position: relative;
+        padding-left: 2rem;
+      }
+      .history-timeline::before {
+        content: '';
+        position: absolute;
+        left: 0.5rem;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: linear-gradient(to bottom, #d1d5db 0%, #e5e7eb 100%);
+      }
+      .history-tx-card {
+        position: relative;
+        padding: 1rem 0;
+        border-bottom: 1px solid #f3f4f6;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .history-tx-card:last-child { border-bottom: none; }
+      .history-tx-card:hover { background: #f9fafb; }
+      .history-tx-card::before {
+        content: '';
+        position: absolute;
+        left: -1.625rem;
+        top: 1.125rem;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2px solid white;
+        box-shadow: 0 0 0 2px #e5e7eb;
+      }
+      .history-tx-card.op-created::before { background: #10b981; }
+      .history-tx-card.op-updated::before { background: #3b82f6; }
+      .history-tx-card.op-retracted::before { background: #ef4444; }
+      .history-tx-card.op-admin::before { background: #6b7280; }
+      .history-tx-card.op-correction::before { background: #f59e0b; }
+
+      /* Expandable detail */
+      .htx-details {
+        display: none;
+        margin-top: 0.75rem;
+        padding-top: 0.75rem;
+        border-top: 1px solid #e5e7eb;
+      }
+      .history-tx-card.expanded .htx-details { display: block; }
+      .expand-chevron {
+        float: right;
+        font-size: 0.75rem;
+        color: #9ca3af;
+        transition: transform 0.2s;
+      }
+      .history-tx-card.expanded .expand-chevron { transform: rotate(180deg); }
+
+      /* Entity badges */
+      .entity-badge {
+        display: inline-block;
+        padding: 0.125rem 0.5rem;
+        border-radius: 9999px;
+        font-size: 0.6875rem;
+        font-weight: 600;
+        letter-spacing: 0.025em;
+        text-transform: uppercase;
+      }
+      .entity-badge.t-payment { background: #dcfce7; color: #166534; }
+      .entity-badge.t-installment { background: #dbeafe; color: #1e40af; }
+      .entity-badge.t-fee { background: #fef3c7; color: #92400e; }
+      .entity-badge.t-deposit { background: #f3e8ff; color: #6b21a8; }
+      .entity-badge.t-disbursement { background: #fee2e2; color: #991b1b; }
+      .entity-badge.t-contract { background: #e0e7ff; color: #3730a3; }
+      .entity-badge.t-principal-allocation { background: #ffedd5; color: #9a3412; }
+
+      /* Changes table */
+      .changes-table {
+        width: 100%;
+        font-size: 0.8125rem;
+        border-collapse: collapse;
+        margin-top: 0.5rem;
+      }
+      .changes-table th {
+        text-align: left;
+        color: #6b7280;
+        font-weight: 500;
+        padding: 0.25rem 0.5rem;
+        border-bottom: 1px solid #e5e7eb;
+        font-size: 0.75rem;
+      }
+      .changes-table td {
+        padding: 0.25rem 0.5rem;
+        border-bottom: 1px solid #f3f4f6;
+      }
+      .change-old {
+        text-decoration: line-through;
+        color: #dc2626;
+        opacity: 0.7;
+      }
+      .change-new {
+        font-weight: 600;
+        color: #059669;
+      }
+      .change-arrow {
+        color: #9ca3af;
+        padding: 0 0.25rem;
+      }
+
+      /* History filters */
+      .history-filters {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-bottom: 1rem;
+        padding: 0.75rem 1rem;
+        background: #f9fafb;
+        border-radius: 0.5rem;
+        border: 1px solid #e5e7eb;
+        align-items: flex-end;
+      }
+      .history-filters .filter-group {
+        margin-bottom: 0;
+      }
+      .history-filters .filter-group label {
+        display: block;
+        font-size: 0.6875rem;
+        color: #6b7280;
+        margin-bottom: 0.25rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .history-filters input, .history-filters select {
+        padding: 0.375rem 0.5rem;
+        border: 1px solid #d1d5db;
+        border-radius: 0.375rem;
+        font-size: 0.8125rem;
+      }
+
+      /* History pagination */
+      .history-pagination {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 0;
+        font-size: 0.8125rem;
+        color: #6b7280;
+      }
+      .history-pagination a {
+        padding: 0.375rem 0.75rem;
+        border: 1px solid #d1d5db;
+        border-radius: 0.375rem;
+        text-decoration: none;
+        color: #374151;
+        font-weight: 500;
+      }
+      .history-pagination a:hover { background: #f3f4f6; }
+      .history-pagination a.disabled {
+        opacity: 0.5;
+        pointer-events: none;
+      }
+
+      /* History summary line */
+      .htx-summary {
+        font-size: 0.875rem;
+        color: #374151;
+      }
+      .htx-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 0.25rem;
+      }
+      .htx-timestamp {
+        font-size: 0.75rem;
+        color: #9ca3af;
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', monospace;
+      }
+      .htx-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        font-size: 0.75rem;
+        color: #6b7280;
+        margin-top: 0.25rem;
+      }
+      .htx-entity-group {
+        margin-bottom: 0.5rem;
+        padding: 0.5rem;
+        background: #f9fafb;
+        border-radius: 0.375rem;
+      }
+      .htx-entity-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.25rem;
+        font-size: 0.8125rem;
+        font-weight: 500;
+      }
+      .htx-op-label {
+        font-size: 0.6875rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .htx-op-label.op-created { color: #059669; }
+      .htx-op-label.op-updated { color: #2563eb; }
+      .htx-op-label.op-retracted { color: #dc2626; }
     "]]
    [:body
     [:div.header
@@ -629,6 +863,7 @@
       [:h1 "LMS - Loan Management System - I am Aziz"]
       [:nav.nav
        [:a {:href "/contracts"} "Contracts"]
+       [:a {:href "/parties"} "Parties"]
        [:a {:href "/about"} "About"]]]]
     [:div.container
      content]]))
@@ -698,7 +933,7 @@
   [state]
   (let [contract (:contract state)]
     [:div.card
-     [:h2 (str (:external-id contract) " - " (:customer-name contract))]
+     [:h2 (str (:external-id contract) " - " (get-in contract [:borrower :legal-name]))]
      [:div.summary-grid
       [:div.summary-item
        [:div.label "Status"]
@@ -720,7 +955,11 @@
        [:div.value (format-date (:start-date contract))]]
       [:div.summary-item
        [:div.label "Maturity Date"]
-       [:div.value (format-date (:maturity-date contract))]]]]))
+       [:div.value (format-date (:maturity-date contract))]]
+      (when (:days-to-first-installment contract)
+        [:div.summary-item
+         [:div.label "Days to 1st Installment"]
+         [:div.value (str (:days-to-first-installment contract) " days")]])]]))
 
 (defn fees-table
   "Render fees table.
@@ -802,127 +1041,225 @@
   (when date
     (.format (java.text.SimpleDateFormat. "yyyy-MM-dd HH:mm") date)))
 
-(defn- event-type-class
-  "Return CSS class for event type styling."
-  [event]
-  (case (:event-type event)
-    :payment "type-payment"
-    :retracted-payment "type-retracted"
-    :disbursement (if (= :refund (:sub-type event))
-                    "type-reversal"      ;; reuse reversal styling for refunds (orange)
-                    "type-disbursement")
-    :deposit "type-deposit"
-    :principal-allocation "type-principal-allocation"
-    :admin "type-boarding"
-    "type-boarding"))
 
-(defn- event-type-label
-  "Return display label for event type."
-  [event]
-  (case (:event-type event)
+;; ============================================================
+;; Comprehensive History Components (HTMX tab)
+;; ============================================================
+
+(defn- entity-type-display
+  "Human-readable entity type name."
+  [entity-type]
+  (case entity-type
     :payment "Payment"
-    :retracted-payment "Payment (Retracted)"
-    :disbursement (case (:sub-type event)
-                    :funding "Disbursement (Funding)"
-                    :refund "Refund"
-                    :excess-return "Excess Return"
-                    "Disbursement")
-    :deposit (case (:sub-type event)
-               :received "Deposit Received"
-               :refund "Deposit Refund"
-               :offset "Deposit Offset"
-               :transfer "Deposit Transfer"
-               "Deposit")
+    :installment "Installment"
+    :fee "Fee"
+    :deposit "Deposit"
+    :disbursement "Disbursement"
+    :contract "Contract"
     :principal-allocation "Principal Allocation"
-    :admin (case (:type event)
-             :boarding "Boarding"
-             :rate-adjustment "Rate Adjustment"
-             (some-> (:type event) name str/capitalize))
-    "Event"))
+    (some-> entity-type name str/capitalize)))
 
-(defn- retraction-reason-label
-  "Human-readable label for retraction reason keywords."
-  [reason]
-  (case reason
-    :correction "Wrong Amount"
-    :duplicate-removal "Duplicate Entry"
-    :erroneous-entry "Wrong Contract"
-    (some-> reason name)))
+(defn- tx-operation-class
+  "CSS class for a transaction operation."
+  [operation]
+  (case operation
+    :created "op-created"
+    :updated "op-updated"
+    :retracted "op-retracted"
+    :admin "op-admin"
+    :correction "op-correction"
+    "op-updated"))
 
-(defn transaction-log
-  "Render event history as a timeline.
+(defn- entity-operation-summary
+  "Generate summary text for an entity change."
+  [entity]
+  (let [{:keys [entity-type label operation sub-type]} entity
+        type-name (entity-type-display entity-type)
+        label-str (when label (str " " label))
+        sub-str (when sub-type
+                  (str " (" (str/capitalize (name sub-type)) ")"))]
+    (case operation
+      :created (str type-name sub-str label-str " created")
+      :retracted (str type-name sub-str label-str " retracted")
+      :updated (str type-name sub-str label-str " updated")
+      (str type-name sub-str label-str " changed"))))
 
-   Displays all monetary and admin events chronologically.
-   Entity events (payments, disbursements, deposits) show business date and amount.
-   Admin events (boarding, rate-adjustment) show recording date.
-   Retracted payments show strikethrough amount, reason badge, and retraction metadata.
+(defn- tx-summary-text
+  "Generate summary text for a full transaction."
+  [tx]
+  (let [{:keys [operation entities tx-metadata]} tx
+        tx-type (:tx/type tx-metadata)
+        entity-count (count entities)]
+    (cond
+      ;; Admin event with type
+      tx-type
+      (str (str/capitalize (name tx-type))
+           (when (> entity-count 0)
+             (str " (" entity-count " entit"
+                  (if (= 1 entity-count) "y" "ies") ")")))
+      ;; Correction
+      (= operation :correction)
+      (let [reason (:tx/reason tx-metadata)]
+        (str "Correction"
+             (when reason (str " (" (str/capitalize (name reason)) ")"))))
+      ;; Single entity change
+      (= entity-count 1)
+      (entity-operation-summary (first entities))
+      ;; Multiple entities
+      :else
+      (let [types (frequencies (map :entity-type entities))]
+        (str/join ", "
+                  (for [[t cnt] types]
+                    (str cnt " " (entity-type-display t)
+                         (when (> cnt 1) "s")
+                         " " (name operation))))))))
+
+(defn- attribute-changes-table
+  "Render a table of attribute changes with before -> after values."
+  [changes]
+  (when (seq changes)
+    [:table.changes-table
+     [:thead
+      [:tr
+       [:th "Attribute"]
+       [:th "Change"]]]
+     [:tbody
+      (for [c changes
+            :let [{:keys [attribute operation display-name display-old display-new]} c]]
+        [:tr {:key (str attribute)}
+         [:td display-name]
+         [:td
+          (case operation
+            :updated [:span
+                      [:span.change-old display-old]
+                      [:span.change-arrow "\u2192"]
+                      [:span.change-new display-new]]
+            :asserted [:span.change-new display-new]
+            :retracted [:span.change-old display-old]
+            [:span (or display-new display-old)])]])]]))
+
+(defn- history-transaction-card
+  "Render a single transaction card in the history timeline.
+   Expandable: click to show attribute-level changes."
+  [tx idx]
+  (let [{:keys [tx-instant tx-metadata entities operation]} tx
+        author (:tx/author tx-metadata)
+        note (:tx/note tx-metadata)
+        card-id (str "htx-card-" idx)]
+    [:div.history-tx-card
+     {:class (tx-operation-class operation)
+      :onclick (str "document.getElementById('" card-id "').classList.toggle('expanded')")
+      :id card-id}
+     ;; Header: summary + timestamp
+     [:div.htx-header
+      [:span.htx-summary (tx-summary-text tx)]
+      [:span.htx-timestamp (format-datetime tx-instant)]]
+     ;; Chevron indicator
+     [:span.expand-chevron "\u25BC"]
+     ;; Meta row
+     [:div.htx-meta
+      (when author
+        [:span [:span {:style "color: #9ca3af;"} "By: "] author])
+      (when note
+        [:span {:style "font-style: italic; color: #92400e;"}
+         "\"" note "\""])]
+     ;; Expandable details
+     [:div.htx-details
+      (for [[i entity] (map-indexed vector entities)]
+        [:div.htx-entity-group {:key (str (:entity-id entity) "-" i)}
+         ;; Entity header with badge
+         [:div.htx-entity-header
+          [:span.entity-badge {:class (str "t-" (name (:entity-type entity)))}
+           (entity-type-display (:entity-type entity))]
+          (when (:label entity)
+            [:span {:style "color: #374151;"} (:label entity)])
+          [:span.htx-op-label {:class (str "op-" (name (:operation entity)))}
+           (name (:operation entity))]]
+         ;; Attribute changes table
+         (attribute-changes-table (:display-changes entity))])]]))
+
+(defn- history-filters-bar
+  "Render filter controls for history tab."
+  [contract-id filters]
+  (let [{:keys [entity-types from-date to-date]} filters
+        base-url (str "/contracts/" contract-id "/history-tab")]
+    [:form.history-filters
+     {:hx-get base-url
+      :hx-target "#history-tab-content"
+      :hx-trigger "change"
+      :hx-include "closest form"}
+     [:div.filter-group
+      [:label "From"]
+      [:input {:type "date" :name "from-date"
+               :value (or from-date "")}]]
+     [:div.filter-group
+      [:label "To"]
+      [:input {:type "date" :name "to-date"
+               :value (or to-date "")}]]
+     [:div.filter-group
+      [:label "Entity Type"]
+      [:select {:name "entity-types"}
+       [:option {:value ""} "All"]
+       [:option {:value "payment" :selected (= entity-types #{:payment})} "Payments"]
+       [:option {:value "installment" :selected (= entity-types #{:installment})} "Installments"]
+       [:option {:value "fee" :selected (= entity-types #{:fee})} "Fees"]
+       [:option {:value "disbursement" :selected (= entity-types #{:disbursement})} "Disbursements"]
+       [:option {:value "deposit" :selected (= entity-types #{:deposit})} "Deposits"]
+       [:option {:value "contract" :selected (= entity-types #{:contract})} "Contract"]]]
+     [:div.filter-group
+      [:button.btn.btn-secondary
+       {:type "button"
+        :style "font-size: 0.75rem; padding: 0.375rem 0.75rem;"
+        :onclick (str "htmx.ajax('GET', '" base-url "', '#history-tab-content')")}
+       "Clear"]]]))
+
+(defn- history-pagination-bar
+  "Render pagination controls for history tab."
+  [contract-id pagination filters]
+  (let [{:keys [page total total-pages]} pagination
+        {:keys [entity-types from-date to-date]} filters
+        base-url (str "/contracts/" contract-id "/history-tab")
+        build-url (fn [p]
+                    (str base-url "?page=" p
+                         (when entity-types
+                           (str "&entity-types=" (str/join "," (map name entity-types))))
+                         (when from-date (str "&from-date=" from-date))
+                         (when to-date (str "&to-date=" to-date))))]
+    [:div.history-pagination
+     [:span (str "Showing page " page " of " total-pages
+                 " (" total " transaction" (when (not= 1 total) "s") " total)")]
+     [:div {:style "display: flex; gap: 0.5rem;"}
+      [:a {:href "#"
+           :class (when (<= page 1) "disabled")
+           :hx-get (build-url (max 1 (dec page)))
+           :hx-target "#history-tab-content"} "\u2190 Prev"]
+      [:a {:href "#"
+           :class (when (>= page total-pages) "disabled")
+           :hx-get (build-url (min total-pages (inc page)))
+           :hx-target "#history-tab-content"} "Next \u2192"]]]))
+
+(defn history-tab-content
+  "Render the content for the History tab. Returned as HTMX partial.
 
    Args:
-   - events: Sequence of event maps from contract/get-events
-
-   Returns: Hiccup div"
-  [events]
-  [:div.card
-   [:h2 "Transaction History"]
-   (if (empty? events)
-     [:p.text-muted "No transactions yet."]
-     [:div.tx-timeline
-      (for [event (reverse events)]  ;; Most recent first
-        (let [retracted? (= :retracted-payment (:event-type event))]
-          [:div.tx-event {:key (or (:id event) (:tx-id event))
-                          :class (event-type-class event)}
-           ;; Header: type + date
-           [:div.tx-header
-            [:span.tx-type {:class (str "tx-type-" (name (:event-type event)))}
-             (event-type-label event)]
-            [:span.tx-timestamp (format-datetime (:date event))]]
-
-           ;; Amount (all amounts positive — direction from event type)
-           (when (:amount event)
-             [:div.tx-amount {:class (cond
-                                       retracted? "reversed"
-                                       (= :refund (:sub-type event)) "reversal")}
-              "SAR " (format-money (:amount event))])
-
-           ;; Retraction reason badge
-           (when retracted?
-             [:div
-              [:span.tx-retraction-reason (retraction-reason-label (:reason event))]])
-
-           ;; Metadata row
-           [:div.tx-meta
-            (when (:reference event)
-              [:span.tx-meta-item
-               [:span.tx-meta-label "Ref:"]
-               [:span (:reference event)]])
-            (when (:channel event)
-              [:span.tx-meta-item
-               [:span.tx-meta-label "Channel:"]
-               [:span (:channel event)]])
-            (when (and retracted? (:original-date event))
-              [:span.tx-meta-item
-               [:span.tx-meta-label "Original date:"]
-               [:span (format-datetime (:original-date event))]])
-            (when (:author event)
-              [:span.tx-meta-item
-               [:span.tx-meta-label "By:"]
-               [:span (:author event)]])]
-
-           ;; Note (for admin events, refunds, or retraction notes)
-           (when (:note event)
-             [:div.tx-reason
-              "\"" (:note event) "\""])
-
-           ;; Retract button (only for live payments — data correction)
-           (when (= :payment (:event-type event))
-             [:div {:style "margin-top: 0.5rem;"}
-              [:button.btn.btn-secondary
-               {:type "button"
-                :style "font-size: 0.75rem; padding: 0.25rem 0.5rem;"
-              :onclick (str "showRetractPaymentModal('" (:id event) "', '"
-                           (:reference event) "', "
-                           (:amount event) ")")}
-             "Retract"]])]))])])
+   - contract-id: UUID
+   - transactions: paginated, formatted history transactions
+   - filters: current filter state
+   - pagination: {:page :total :total-pages}"
+  [contract-id transactions filters pagination]
+  [:div#history-tab-content
+   ;; Filters
+   (history-filters-bar contract-id filters)
+   ;; Timeline
+   (if (empty? transactions)
+     [:p.text-muted {:style "padding: 2rem; text-align: center;"}
+      "No history found for the selected filters."]
+     [:div.history-timeline
+      (for [[idx tx] (map-indexed vector transactions)]
+        (history-transaction-card tx idx))])
+   ;; Pagination
+   (when (> (:total-pages pagination) 1)
+     (history-pagination-bar contract-id pagination filters))])
 
 ;; ============================================================
 ;; Payment Components
@@ -1259,16 +1596,11 @@
     [:div#settlement-result-area]]])
 
 (defn origination-form
-  "Render origination modal with system-calculated funding breakdown.
+  "Render origination modal with unified principal deduction selection.
 
-   Computes the funding allocation from contract state:
-   - Fee deduction = outstanding fees (not yet covered by pre-payments)
-   - Deposit from funding = security deposit minus deposits already held
-   - Disbursement = principal minus deductions
-   - Excess return = customer credit balance (overpayment beyond fees)
-
-   The user provides only the origination date and wire reference.
-   Amounts are derived, not entered.
+   Shows each fee individually with checkboxes, deposit option, and
+   installment prepayment field. The user selects what to deduct from
+   principal — the disbursement amount updates accordingly.
 
    Args:
    - contract-id: UUID of contract
@@ -1279,56 +1611,116 @@
   (let [contract (:contract state)
         principal (or (:principal contract) 0M)
         security-deposit (or (:security-deposit-required contract) 0M)
-        fee-deduction (max 0M (- (or (:total-fees-due state) 0M)
-                                  (or (:total-fees-paid state) 0M)))
+        fees (->> (:fees state)
+                  (filter #(= :unpaid (:status %))))
         deposit-held (or (:deposit-held state) 0M)
-        deposit-from-funding (max 0M (- security-deposit deposit-held))
-        disbursement-amount (max 0M (- principal fee-deduction deposit-from-funding))
+        deposit-needed (max 0M (- security-deposit deposit-held))
         credit-balance (or (:credit-balance state) 0M)
         excess-return (if (pos? credit-balance) credit-balance 0M)
         disb-iban (:disbursement-iban contract)
         disb-bank (:disbursement-bank contract)
-        fmt-val (fn [n] (format "%.2f" (double n)))]
+        fmt-val (fn [n] (format "%.2f" (double n)))
+        fmt-date (fn [d] (when d (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") d)))
+        ;; Pre-calculate initial deductions (fees due on/before today + deposit)
+        today (java.util.Date.)
+        initial-fee-total (->> fees
+                               (filter #(not (.after ^java.util.Date (:due-date %) today)))
+                               (map :amount)
+                               (reduce + 0M))
+        initial-deductions (+ initial-fee-total deposit-needed)
+        initial-disbursement (max 0M (- principal initial-deductions))]
     [:div#origination-modal.modal
      [:div.modal-content
       [:div.modal-header
        [:h3 "Originate Contract"]]
       [:p {:style "font-size: 0.875rem; color: #6b7280; margin-bottom: 1rem;"}
-       "Funding breakdown calculated from contract terms and pre-payments."]
+       "Select deductions from principal. Disbursement updates automatically."]
 
-      ;; Funding allocation preview
-      [:div.preview-section
-       [:h4 "Funding Allocation"]
-       [:div.preview-item
-        [:div.label "Principal"]
-        [:div.value (str "SAR " (format-money principal))]]
-       (when (pos? fee-deduction)
-         [:div.preview-item
-          [:div.label "Less: Fee deduction (outstanding fees)"]
-          [:div.value (str "SAR " (format-money fee-deduction))]])
-       (when (pos? deposit-from-funding)
-         [:div.preview-item
-          [:div.label "Less: Deposit from funding"]
-          [:div.value (str "SAR " (format-money deposit-from-funding))]])
-       [:div.preview-item {:style "font-weight: bold; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 2px solid #d1d5db;"}
-        [:div.label "Merchant Disbursement"]
-        [:div.value (str "SAR " (format-money disbursement-amount))]]
-       (when (pos? excess-return)
-         [:div.preview-item
-          [:div.label "Plus: Excess return to customer"]
-          [:div.value (str "SAR " (format-money excess-return))]])]
-
-      ;; Form — computed amounts as hidden inputs, user provides date + reference
       [:form {:method "post"
               :action (str "/contracts/" contract-id "/originate")}
-       (when (pos? fee-deduction)
-         [:input {:type "hidden" :name "fee-deduction" :value (fmt-val fee-deduction)}])
-       (when (pos? deposit-from-funding)
-         [:input {:type "hidden" :name "deposit-from-funding" :value (fmt-val deposit-from-funding)}])
-       [:input {:type "hidden" :name "disbursement-amount" :value (fmt-val disbursement-amount)}]
-       (when (pos? excess-return)
-         [:input {:type "hidden" :name "excess-return" :value (fmt-val excess-return)}])
 
+       ;; Principal display
+       [:div.preview-section
+        [:div.preview-item
+         [:div.label "Principal"]
+         [:div.value (str "SAR " (format-money principal))]]]
+
+       ;; Deductions from principal
+       [:div {:style "margin: 1rem 0; padding: 1rem; background: #f9fafb; border-radius: 0.5rem;"}
+        [:h4 {:style "margin: 0 0 0.75rem 0; font-size: 0.875rem; color: #374151;"}
+         "Deductions from Principal"]
+
+        ;; Per-fee checkboxes
+        (when (seq fees)
+          [:div {:style "margin-bottom: 0.75rem;"}
+           (for [{:keys [id type amount due-date]} fees
+                 :let [fee-due-today? (not (.after ^java.util.Date due-date today))
+                       checkbox-id (str "fee-" id)]]
+             [:div {:style "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0;"
+                    :key (str id)}
+              [:input {:type "checkbox"
+                       :id checkbox-id
+                       :class "orig-fee-checkbox"
+                       :data-amount (fmt-val amount)
+                       :checked fee-due-today?
+                       :onchange "updateOrigDisbursement()"}]
+              [:input {:type "hidden" :class "orig-fee-id-input" :disabled true
+                       :name "settle-fee-id[]" :value (str id)
+                       :data-checkbox checkbox-id}]
+              [:input {:type "hidden" :class "orig-fee-amount-input" :disabled true
+                       :name "settle-fee-amount[]" :value (fmt-val amount)
+                       :data-checkbox checkbox-id}]
+              [:label {:for checkbox-id
+                       :style "flex: 1; display: flex; justify-content: space-between; cursor: pointer;"}
+               [:span (str "Fee: " (name type)
+                           (when due-date (str " (due " (fmt-date due-date) ")")))]
+               [:span {:style "font-weight: 500;"} (str "SAR " (format-money amount))]]])])
+
+        ;; Deposit checkbox
+        (when (pos? deposit-needed)
+          [:div {:style "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0;
+                         border-top: 1px solid #e5e7eb; margin-top: 0.25rem; padding-top: 0.625rem;"}
+           [:input {:type "checkbox"
+                    :id "orig-deposit-checkbox"
+                    :checked true
+                    :data-amount (fmt-val deposit-needed)
+                    :onchange "updateOrigDisbursement()"}]
+           [:input {:type "hidden" :name "deposit-from-funding" :disabled true
+                    :id "orig-deposit-hidden" :value (fmt-val deposit-needed)}]
+           [:label {:for "orig-deposit-checkbox"
+                    :style "flex: 1; display: flex; justify-content: space-between; cursor: pointer;"}
+            [:span "Security Deposit"]
+            [:span {:style "font-weight: 500;"} (str "SAR " (format-money deposit-needed))]]])
+
+        ;; Installment prepayment
+        [:div {:style "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0;
+                       border-top: 1px solid #e5e7eb; margin-top: 0.25rem; padding-top: 0.625rem;"}
+         [:label {:for "orig-inst-prepayment" :style "flex: 1;"}
+          "Installment prepayment"]
+         [:input {:type "number"
+                  :id "orig-inst-prepayment"
+                  :name "installment-prepayment"
+                  :step "0.01" :min "0"
+                  :placeholder "0.00"
+                  :style "width: 10rem; text-align: right;"
+                  :onchange "updateOrigDisbursement()"
+                  :oninput "updateOrigDisbursement()"}]]]
+
+       ;; Summary
+       [:div.preview-section {:style "margin-top: 0.75rem;"}
+        [:div.preview-item {:style "font-weight: bold; padding-top: 0.5rem; border-top: 2px solid #d1d5db;"}
+         [:div.label "Merchant Disbursement"]
+         [:div.value {:id "orig-disbursement-display"} (str "SAR " (format-money initial-disbursement))]]
+        [:input {:type "hidden" :name "disbursement-amount" :id "orig-disbursement-value"
+                 :value (fmt-val initial-disbursement)}]
+        (when (pos? excess-return)
+          [:div.preview-item
+           [:div.label "Plus: Excess return to customer"]
+           [:div.value (str "SAR " (format-money excess-return))]])
+        (when (pos? excess-return)
+          [:input {:type "hidden" :name "excess-return" :value (fmt-val excess-return)}])]
+
+       ;; User inputs (date, reference, IBAN, bank)
        [:div {:style "border-top: 1px solid #e5e7eb; padding-top: 1rem; margin-top: 1rem;"}
         [:div.form-group
          [:label {:for "orig-date"} "Origination Date *"]
@@ -1367,8 +1759,50 @@
          "Cancel"]
         [:button.btn.btn-success
          {:type "submit"}
-         "Originate"]]]]]))
+         "Originate"]]]
 
+      ;; JavaScript for dynamic disbursement calculation and hidden input toggling
+      [:script
+       (str "
+function updateOrigDisbursement() {
+  var principal = " (fmt-val principal) ";
+  var total = 0;
+
+  // Sum checked fee amounts
+  document.querySelectorAll('.orig-fee-checkbox').forEach(function(cb) {
+    if (cb.checked) {
+      total += parseFloat(cb.dataset.amount);
+    }
+  });
+
+  // Toggle hidden inputs for fees (disabled inputs are not submitted)
+  document.querySelectorAll('.orig-fee-id-input, .orig-fee-amount-input').forEach(function(inp) {
+    var cb = document.getElementById(inp.dataset.checkbox);
+    inp.disabled = !cb.checked;
+  });
+
+  // Deposit
+  var depCb = document.getElementById('orig-deposit-checkbox');
+  var depHidden = document.getElementById('orig-deposit-hidden');
+  if (depCb && depCb.checked) {
+    total += parseFloat(depCb.dataset.amount);
+    if (depHidden) depHidden.disabled = false;
+  } else {
+    if (depHidden) depHidden.disabled = true;
+  }
+
+  // Installment prepayment
+  var prepay = parseFloat(document.getElementById('orig-inst-prepayment').value) || 0;
+  total += prepay;
+
+  var disbursement = Math.max(0, principal - total).toFixed(2);
+  document.getElementById('orig-disbursement-display').textContent = 'SAR ' + parseFloat(disbursement).toLocaleString('en', {minimumFractionDigits: 2});
+  document.getElementById('orig-disbursement-value').value = disbursement;
+}
+
+// Initialize on load
+updateOrigDisbursement();
+")]]]))
 (defn retract-origination-modal
   "Render modal for retracting origination entities (data correction).
 
@@ -1430,12 +1864,11 @@
 
    Args:
    - state: Contract state map from contract/contract-state
-   - events: Event timeline from contract/get-events
    - flash: Optional flash message map with :type and :message keys
 
    Returns: Complete HTML page"
-  ([state events] (contract-detail-page state events nil))
-  ([state events flash]
+  ([state] (contract-detail-page state nil))
+  ([state flash]
    (let [contract-id (get-in state [:contract :id])]
      (page-layout
       (str "Contract: " (get-in state [:contract :external-id]))
@@ -1466,18 +1899,44 @@
            :style "background-color: #dc2626; color: white;"
            :onclick "document.getElementById('retract-contract-modal').classList.add('active')"}
           "Delete Contract"]]]
-       (contract-summary state)
-       (fees-table (:fees state))
-       (installments-table (:installments state))
-       (transaction-log events)
+       ;; Tabs navigation
+       [:div.tabs
+        [:a.tab.active {:href "#" :data-tab "overview" :onclick "switchTab(event, 'overview')"} "Overview"]
+        [:a.tab {:href "#" :data-tab "schedule" :onclick "switchTab(event, 'schedule')"} "Schedule"]
+        [:a.tab {:href "#" :data-tab "history"
+                 :onclick "switchTab(event, 'history')"
+                 :hx-get (str "/contracts/" contract-id "/history-tab")
+                 :hx-target "#tab-history"
+                 :hx-trigger "click once"
+                 :hx-swap "innerHTML"} "History"]]
+       ;; Tab content panels
+       [:div#tab-overview.tab-content.active
+        (contract-summary state)
+        (fees-table (:fees state))]
+       [:div#tab-schedule.tab-content
+        (installments-table (:installments state))]
+       [:div#tab-history.tab-content
+        [:div {:style "text-align: center; padding: 2rem; color: #6b7280;"}
+         "Click the History tab to load transaction history..."]]
+       ;; Modals (outside tabs)
        (payment-form contract-id)
        (retract-payment-modal contract-id)
        (retract-contract-modal contract-id (get-in state [:contract :external-id]))
        (settlement-form contract-id)
        (origination-form contract-id state)
        (retract-origination-modal contract-id)
-       ;; JavaScript for modal handling
+       ;; JavaScript for tabs and modal handling
        [:script "
+         function switchTab(event, tabName) {
+           event.preventDefault();
+           // Deactivate all tabs and panels
+           document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+           document.querySelectorAll('.tab-content').forEach(p => p.classList.remove('active'));
+           // Activate clicked tab and its panel
+           event.currentTarget.classList.add('active');
+           document.getElementById('tab-' + tabName).classList.add('active');
+         }
+
          function showRetractPaymentModal(paymentId, reference, amount) {
            document.getElementById('retract-payment-id').value = paymentId;
            document.getElementById('retract-payment-details').innerHTML =
@@ -1537,8 +1996,8 @@
     [:input {:type "date" :name "fee-due-date[]" :required true
              :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;"}]]
    [:button.btn.btn-secondary {:type "button"
-                                :onclick "this.closest('[data-fee-row]').remove()"
-                                :style "padding: 0.5rem; font-size: 0.875rem; height: fit-content;"}
+                               :onclick "this.closest('[data-fee-row]').remove()"
+                               :style "padding: 0.5rem; font-size: 0.875rem; height: fit-content;"}
     "X"]])
 
 (defn boarding-form-page
@@ -1568,15 +2027,15 @@
       [:div {:style "display: flex; gap: 0; margin-bottom: 1.5rem; border-bottom: 2px solid #e5e7eb;"}
        [:a {:href "/contracts/new?type=new"
             :style (str "padding: 0.75rem 1.5rem; font-weight: 600; text-decoration: none; border-bottom: 2px solid "
-                       (if-not existing? "#3b82f6" "transparent")
-                       "; margin-bottom: -2px; color: "
-                       (if-not existing? "#3b82f6" "#6b7280") ";")}
+                        (if-not existing? "#3b82f6" "transparent")
+                        "; margin-bottom: -2px; color: "
+                        (if-not existing? "#3b82f6" "#6b7280") ";")}
         "New Loan"]
        [:a {:href "/contracts/new?type=existing"
             :style (str "padding: 0.75rem 1.5rem; font-weight: 600; text-decoration: none; border-bottom: 2px solid "
-                       (if existing? "#3b82f6" "transparent")
-                       "; margin-bottom: -2px; color: "
-                       (if existing? "#3b82f6" "#6b7280") ";")}
+                        (if existing? "#3b82f6" "transparent")
+                        "; margin-bottom: -2px; color: "
+                        (if existing? "#3b82f6" "#6b7280") ";")}
         "Existing Loan"]]
 
       ;; Validation errors
@@ -1597,28 +2056,39 @@
                    :value (get values "external-id")
                    :placeholder "e.g., LOAN-2024-001"}]]
          [:div.form-group
-          [:label {:for "customer-name"} "Customer Name *"]
-          [:input {:type "text" :id "customer-name" :name "customer-name" :required true
-                   :value (get values "customer-name")
-                   :placeholder "e.g., Acme Trading Co."}]]
-         [:div.form-group
-          [:label {:for "customer-id"} "Customer ID *"]
-          [:input {:type "text" :id "customer-id" :name "customer-id" :required true
-                   :value (get values "customer-id")
-                   :placeholder "e.g., CR-1234567890"}]]
+          [:label {:for "borrower-party-id"} "Borrower (Company) *"]
+          [:input {:type "hidden" :id "borrower-party-id" :name "borrower-party-id"
+                   :value (get values "borrower-party-id")}]
+          [:input {:type "text" :id "borrower-search" :autocomplete "off"
+                   :placeholder "Search by company name or CR number..."
+                   :value (get values "borrower-name")
+                   :hx-get "/api/parties/search?type=company"
+                   :hx-trigger "keyup changed delay:300ms"
+                   :hx-target "#borrower-results"
+                   :hx-swap "innerHTML"
+                   :name "borrower-search"}]
+          [:div {:id "borrower-results"
+                 :style "border: 1px solid #e5e7eb; border-radius: 0.375rem; max-height: 200px; overflow-y: auto; display: none;"}]
+          [:small {:style "color: #6b7280; font-size: 0.75rem;"}
+           "Search and select a company party. "
+           [:a {:href "/parties/new" :target "_blank"} "Create new party"]]]
          [:div.form-group
           [:label {:for "start-date"} "Start Date *"]
           [:input {:type "date" :id "start-date" :name "start-date" :required true
                    :value (get values "start-date")}]]
          [:div.form-group
-          [:label {:for "maturity-date"} "Maturity Date"]
-          [:input {:type "date" :id "maturity-date" :name "maturity-date"
-                   :value (get values "maturity-date")}]]
-         [:div.form-group
           [:label {:for "principal"} "Principal (SAR) *"]
           [:input {:type "number" :id "principal" :name "principal" :step "0.01" :min "0.01" :required true
                    :value (get values "principal")
                    :placeholder "e.g., 1000000.00"}]]
+         [:div.form-group
+          [:label {:for "days-to-first-installment"} "Days to First Installment"]
+          [:input {:type "number" :id "days-to-first-installment" :name "days-to-first-installment"
+                   :step "1" :min "1"
+                   :value (get values "days-to-first-installment")
+                   :placeholder "e.g., 30"}]
+          [:small {:style "color: #6b7280; font-size: 0.75rem;"}
+           "Days from disbursement to first installment. Schedule dates shift at disbursement."]]
          [:div.form-group
           [:label {:for "security-deposit"} "Security Deposit (SAR)"]
           [:input {:type "number" :id "security-deposit" :name "security-deposit" :step "0.01" :min "0"
@@ -1754,8 +2224,18 @@
         [:a.btn.btn-secondary {:href "/contracts" :style "font-size: 1rem; padding: 0.75rem 2rem;"}
          "Cancel"]]]
 
-      ;; JavaScript for dynamic fee rows
+      ;; JavaScript for party search and dynamic fee rows
       [:script "
+        function selectParty(id, name) {
+          document.getElementById('borrower-party-id').value = id;
+          document.getElementById('borrower-search').value = name;
+          document.getElementById('borrower-results').style.display = 'none';
+        }
+        document.addEventListener('htmx:afterSwap', function(event) {
+          if (event.detail.target.id === 'borrower-results') {
+            event.detail.target.style.display = event.detail.target.innerHTML.trim() ? 'block' : 'none';
+          }
+        });
         var feeRowCount = 1;
         function addFeeRow() {
           feeRowCount++;
@@ -1767,6 +2247,314 @@
           container.appendChild(row);
         }
       "]])))
+
+;; ============================================================
+;; Party Views
+;; ============================================================
+
+(defn party-list-page
+  "Render parties list page.
+
+   Args:
+   - parties: Sequence of party entity maps
+
+   Returns: Complete HTML page"
+  [parties]
+  (page-layout
+   "Parties"
+   [:div.card
+    [:div {:style "display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;"}
+     [:h2 {:style "margin-bottom: 0;"} "All Parties"]
+     [:a.btn.btn-success {:href "/parties/new"} "+ Create Party"]]
+    (if (empty? parties)
+      [:div.empty-state
+       [:p "No parties found."]
+       [:p.text-muted "Create a party to get started."]]
+      [:table
+       [:thead
+        [:tr
+         [:th "Legal Name"]
+         [:th "Type"]
+         [:th "Identifier"]
+         [:th "Contact"]
+         [:th "Actions"]]]
+       [:tbody
+        (for [p parties]
+          [:tr {:key (:party/id p)}
+           [:td [:a {:href (str "/parties/" (:party/id p))}
+                 (:party/legal-name p)]]
+           [:td (case (:party/type p)
+                  :party.type/company "Company"
+                  :party.type/person "Person"
+                  (str (:party/type p)))]
+           [:td (or (:party/cr-number p) (:party/national-id p))]
+           [:td (or (:party/email p) (:party/phone p) "-")]
+           [:td [:a.btn.btn-primary {:href (str "/parties/" (:party/id p))}
+                 "View"]]])]])]))
+
+(defn party-form-page
+  "Render party creation/edit form.
+
+   Args:
+   - party: Existing party for edit (nil for create)
+   - opts: Optional map with :errors and :values
+
+   Returns: Complete HTML page"
+  [party & [{:keys [errors values]}]]
+  (let [editing? (some? party)]
+    (page-layout
+     (if editing? "Edit Party" "Create Party")
+     [:div
+      [:div {:style "margin-bottom: 1rem;"}
+       [:a.btn.btn-secondary {:href "/parties"} "\u2190 Back to Parties"]]
+
+      (when (seq errors)
+        [:div.card {:style "background-color: #fef2f2; border-color: #fca5a5;"}
+         [:h3 {:style "color: #991b1b;"} "Validation Errors"]
+         [:ul
+          (for [err errors]
+            [:li {:style "color: #991b1b;"} (:message err)])]])
+
+      [:form {:method "post"
+              :action (if editing?
+                        (str "/parties/" (:party/id party) "/update")
+                        "/parties")}
+       [:div.card
+        [:h2 (if editing? "Edit Party" "New Party")]
+        [:div {:style "display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"}
+         [:div.form-group
+          [:label {:for "type"} "Type *"]
+          (if editing?
+            [:input {:type "text" :disabled true
+                     :value (case (:party/type party)
+                              :party.type/company "Company"
+                              :party.type/person "Person"
+                              "")}]
+            [:select {:id "type" :name "type" :required true
+                      :onchange "togglePartyFields()"}
+             [:option {:value ""} "Select type..."]
+             [:option {:value "company"
+                       :selected (= (get values "type") "company")} "Company"]
+             [:option {:value "person"
+                       :selected (= (get values "type") "person")} "Person"]])]
+         [:div.form-group
+          [:label {:for "legal-name"} "Legal Name *"]
+          [:input {:type "text" :id "legal-name" :name "legal-name" :required true
+                   :value (or (get values "legal-name")
+                              (:party/legal-name party))
+                   :placeholder "Full legal name"}]]
+         [:div.form-group {:id "cr-number-group"}
+          [:label {:for "cr-number"} "CR Number"]
+          [:input {:type "text" :id "cr-number" :name "cr-number"
+                   :value (or (get values "cr-number")
+                              (:party/cr-number party))
+                   :placeholder "Commercial Registration number"}]
+          [:small {:style "color: #6b7280; font-size: 0.75rem;"} "Required for companies"]]
+         [:div.form-group {:id "national-id-group"}
+          [:label {:for "national-id"} "National ID"]
+          [:input {:type "text" :id "national-id" :name "national-id"
+                   :value (or (get values "national-id")
+                              (:party/national-id party))
+                   :placeholder "National ID / Iqama number"}]
+          [:small {:style "color: #6b7280; font-size: 0.75rem;"} "Required for persons"]]
+         [:div.form-group
+          [:label {:for "email"} "Email"]
+          [:input {:type "email" :id "email" :name "email"
+                   :value (or (get values "email")
+                              (:party/email party))
+                   :placeholder "contact@example.com"}]]
+         [:div.form-group
+          [:label {:for "phone"} "Phone"]
+          [:input {:type "text" :id "phone" :name "phone"
+                   :value (or (get values "phone")
+                              (:party/phone party))
+                   :placeholder "+966..."}]]
+         [:div.form-group {:style "grid-column: span 2;"}
+          [:label {:for "address"} "Address"]
+          [:input {:type "text" :id "address" :name "address"
+                   :value (or (get values "address")
+                              (:party/address party))
+                   :placeholder "Full address"}]]]]
+
+       [:div {:style "margin-top: 1.5rem; display: flex; gap: 0.75rem;"}
+        [:button.btn.btn-success {:type "submit" :style "font-size: 1rem; padding: 0.75rem 2rem;"}
+         (if editing? "Update Party" "Create Party")]
+        [:a.btn.btn-secondary {:href "/parties" :style "font-size: 1rem; padding: 0.75rem 2rem;"}
+         "Cancel"]]]
+
+      [:script "
+        function togglePartyFields() {
+          var type = document.getElementById('type').value;
+          var crGroup = document.getElementById('cr-number-group');
+          var nidGroup = document.getElementById('national-id-group');
+          if (type === 'company') {
+            crGroup.style.display = '';
+            nidGroup.style.display = 'none';
+          } else if (type === 'person') {
+            crGroup.style.display = 'none';
+            nidGroup.style.display = '';
+          } else {
+            crGroup.style.display = '';
+            nidGroup.style.display = '';
+          }
+        }
+        togglePartyFields();
+      "]])))
+
+(defn party-detail-page
+  "Render party detail page.
+
+   Args:
+   - party: Party entity map
+   - contracts: Contracts this party is involved in
+   - ownerships: Ownership records for this company (who owns it)
+   - owns: Ownership records where this party is the owner
+
+   Returns: Complete HTML page"
+  [party contracts ownerships owns]
+  (let [company? (= :party.type/company (:party/type party))
+        party-id (:party/id party)]
+    (page-layout
+     (str "Party: " (:party/legal-name party))
+     [:div
+      [:div {:style "margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;"}
+       [:a.btn.btn-secondary {:href "/parties"} "\u2190 Back to Parties"]
+       [:a.btn.btn-primary {:href (str "/parties/" party-id "/edit")} "Edit"]]
+
+      ;; Party info card
+      [:div.card
+       [:h2 (:party/legal-name party)]
+       [:div.summary-grid
+        [:div.summary-item
+         [:div.label "Type"]
+         [:div.value (if company? "Company" "Person")]]
+        [:div.summary-item
+         [:div.label (if company? "CR Number" "National ID")]
+         [:div.value (or (if company? (:party/cr-number party) (:party/national-id party)) "-")]]
+        (when (:party/email party)
+          [:div.summary-item
+           [:div.label "Email"]
+           [:div.value (:party/email party)]])
+        (when (:party/phone party)
+          [:div.summary-item
+           [:div.label "Phone"]
+           [:div.value (:party/phone party)]])
+        (when (:party/address party)
+          [:div.summary-item {:style "grid-column: span 2;"}
+           [:div.label "Address"]
+           [:div.value (:party/address party)]])]]
+
+      ;; Contracts section
+      [:div.card
+       [:h2 "Contracts"]
+       (if (empty? contracts)
+         [:p.text-muted "No contract involvement."]
+         [:table
+          [:thead
+           [:tr
+            [:th "Contract"]
+            [:th "Role"]]]
+          [:tbody
+           (for [c contracts]
+             [:tr {:key (str (:contract-id c) (:role c))}
+              [:td [:a {:href (str "/contracts/" (:contract-id c))}
+                    (str (:contract-id c))]]
+              [:td (name (:role c))]])]])]
+
+      ;; Ownership section (for companies: who owns this company)
+      (when company?
+        [:div.card
+         [:h2 "Ownership Structure"]
+         (when (seq ownerships)
+           [:table
+            [:thead
+             [:tr
+              [:th "Owner"]
+              [:th "Type"]
+              [:th.text-right "Percentage"]
+              [:th "Actions"]]]
+            [:tbody
+             (for [o ownerships]
+               [:tr {:key (:ownership/id o)}
+                [:td [:a {:href (str "/parties/" (get-in o [:ownership/owner :party/id]))}
+                      (get-in o [:ownership/owner :party/legal-name])]]
+                [:td (case (get-in o [:ownership/owner :party/type])
+                       :party.type/company "Company"
+                       :party.type/person "Person"
+                       "-")]
+                [:td.text-right (str (:ownership/percentage o) "%")]
+                [:td [:form {:method "post" :style "display: inline;"
+                             :action (str "/parties/" party-id
+                                          "/ownership/" (:ownership/id o) "/remove")}
+                      [:button.btn {:type "submit"
+                                    :style "background-color: #dc2626; color: white; font-size: 0.75rem; padding: 0.25rem 0.5rem;"
+                                    :onclick "return confirm('Remove this ownership record?')"}
+                       "Remove"]]]])]])
+         (when (empty? ownerships)
+           [:p.text-muted "No ownership records."])
+         [:h3 {:style "margin-top: 1.5rem;"} "Add Owner"]
+         [:form {:method "post"
+                 :action (str "/parties/" party-id "/ownership")}
+          [:div {:style "display: flex; gap: 0.75rem; align-items: flex-end;"}
+           [:div.form-group {:style "flex: 2; position: relative;"}
+            [:label {:for "owner-search"} "Owner Party"]
+            [:input {:type "hidden" :id "owner-party-id" :name "owner-party-id"}]
+            [:input {:type "text" :id "owner-search" :name "owner-search"
+                     :placeholder "Search by name, CR, or National ID..."
+                     :autocomplete "off"}]
+            [:div {:id "owner-search-results"
+                   :style "position: absolute; z-index: 10; background: white; border: 1px solid #d1d5db; border-radius: 0.375rem; width: 100%; max-height: 200px; overflow-y: auto; display: none;"}]]
+           [:div.form-group {:style "flex: 1;"}
+            [:label {:for "percentage"} "Percentage"]
+            [:input {:type "number" :id "percentage" :name "percentage"
+                     :min "0.01" :max "100" :step "0.01"
+                     :placeholder "e.g. 60"
+                     :required true}]]
+           [:div
+            [:button.btn.btn-primary {:type "submit"} "Add Owner"]]]
+          [:script "
+(function() {
+  var searchInput = document.getElementById('owner-search');
+  var resultsDiv = document.getElementById('owner-search-results');
+  var hiddenInput = document.getElementById('owner-party-id');
+  searchInput.addEventListener('input', function() {
+    var q = this.value;
+    if (q.length < 1) { resultsDiv.style.display = 'none'; return; }
+    fetch('/api/parties/search?q=' + encodeURIComponent(q))
+      .then(function(r) { return r.text(); })
+      .then(function(html) {
+        resultsDiv.innerHTML = html;
+        resultsDiv.style.display = 'block';
+      });
+  });
+  document.addEventListener('click', function(e) {
+    if (!resultsDiv.contains(e.target) && e.target !== searchInput) {
+      resultsDiv.style.display = 'none';
+    }
+  });
+  window.selectParty = function(id, name) {
+    hiddenInput.value = id;
+    searchInput.value = name;
+    resultsDiv.style.display = 'none';
+  };
+})();
+"]]])
+
+      ;; Ownership section (what this party owns)
+      (when (seq owns)
+        [:div.card
+         [:h2 "Owns Shares In"]
+         [:table
+          [:thead
+           [:tr
+            [:th "Company"]
+            [:th.text-right "Percentage"]]]
+          [:tbody
+           (for [o owns]
+             [:tr {:key (:ownership/id o)}
+              [:td [:a {:href (str "/parties/" (get-in o [:ownership/company :party/id]))}
+                    (get-in o [:ownership/company :party/legal-name])]]
+              [:td.text-right (str (:ownership/percentage o) "%")]])]]])])))
 
 ;; ============================================================
 ;; Error Pages

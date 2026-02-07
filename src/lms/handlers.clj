@@ -17,6 +17,7 @@
             [lms.dates :as dates]
             [lms.operations :as ops]
             [lms.boarding :as boarding]
+            [lms.party :as party]
             [lms.settlement :as settlement]
             [lms.views :as views]
             [datomic.client.api :as d]
@@ -32,18 +33,17 @@
 (defn list-contracts-handler
   "Handle GET /contracts - list all contracts.
 
-   Query params:
-   - status: optional status filter (:active, :closed, etc.)
+   Note: Status filtering is not currently supported because status is derived
+   from payments and requires computing contract-state for each contract.
+   All contracts are listed; status is shown on detail page.
 
    Returns: HTML page with contract list"
   [request]
   (try
-    (let [status-param (get-in request [:query-params "status"])
-          status-filter (when status-param (keyword status-param))
-          db (d/db (:conn request))
-          contracts (contract/list-contracts db status-filter)]
+    (let [db (d/db (:conn request))
+          contracts (contract/list-contracts db)]
 
-      (log/info "Listed contracts" {:count (count contracts) :filter status-filter})
+      (log/info "Listed contracts" {:count (count contracts)})
 
       (-> (response/response
            (views/contract-list-page contracts))
@@ -91,13 +91,12 @@
                   (response/status 404)
                   (response/content-type "text/html; charset=utf-8")))
 
-            (let [state (contract/contract-state db contract-id (java.util.Date.))
-                  events (contract/get-events db contract-id)]
+            (let [state (contract/contract-state db contract-id (java.util.Date.))]
               (log/info "Viewed contract" {:id contract-id
                                           :external-id (get-in state [:contract :external-id])})
 
               (-> (response/response
-                   (views/contract-detail-page state events flash))
+                   (views/contract-detail-page state flash))
                   (response/content-type "text/html; charset=utf-8")))))))
 
     (catch Exception e
@@ -398,16 +397,14 @@
   [form-params]
   (let [get-param (fn [k] (let [v (get form-params k)]
                             (when-not (str/blank? v) v)))]
+    ;; Note: status is derived (not stored), maturity-date is derived from installments
     (cond-> {:contract/external-id (get-param "external-id")
-             :contract/customer-name (get-param "customer-name")
-             :contract/customer-id (get-param "customer-id")
-             :contract/status :active
+             :contract/borrower (when-let [pid (get-param "borrower-party-id")]
+                                  [:party/id (parse-uuid pid)])
              :contract/start-date (when-let [d (get-param "start-date")]
                                     (dates/->date (dates/parse-date d)))
              :contract/principal (when-let [p (get-param "principal")]
                                    (bigdec p))}
-      (get-param "maturity-date")
-      (assoc :contract/maturity-date (dates/->date (dates/parse-date (get-param "maturity-date"))))
 
       (get-param "security-deposit")
       (assoc :contract/security-deposit (bigdec (get-param "security-deposit")))
@@ -434,7 +431,10 @@
       (assoc :contract/disbursement-bank (get-param "disbursement-bank"))
 
       (get-param "virtual-iban")
-      (assoc :contract/virtual-iban (get-param "virtual-iban")))))
+      (assoc :contract/virtual-iban (get-param "virtual-iban"))
+
+      (get-param "days-to-first-installment")
+      (assoc :contract/days-to-first-installment (Long/parseLong (get-param "days-to-first-installment"))))))
 
 (defn- read-upload
   "Read content from a multipart file upload param.
@@ -603,14 +603,24 @@
           params (:form-params request)
           get-param (fn [k] (let [v (get params k)]
                               (when-not (str/blank? v) v)))
+          normalize (fn [v] (if (string? v) [v] (vec v)))
           date-str (get-param "date")
           date (when date-str
                  (try (dates/->date (dates/parse-date date-str))
                       (catch Exception _ nil)))
-          fee-deduction (when-let [s (get-param "fee-deduction")]
-                          (try (bigdec s) (catch Exception _ nil)))
+          ;; Parse per-fee settlement arrays
+          fee-ids (some-> (get params "settle-fee-id[]") normalize)
+          fee-amounts (some-> (get params "settle-fee-amount[]") normalize)
+          fee-settlements (when (and fee-ids fee-amounts)
+                            (->> (map vector fee-ids fee-amounts)
+                                 (remove (fn [[_ amt]] (str/blank? amt)))
+                                 (mapv (fn [[id-str amt-str]]
+                                         {:fee-id (parse-uuid id-str)
+                                          :amount (bigdec amt-str)}))))
           deposit-from-funding (when-let [s (get-param "deposit-from-funding")]
                                  (try (bigdec s) (catch Exception _ nil)))
+          installment-prepayment (when-let [s (get-param "installment-prepayment")]
+                                   (try (bigdec s) (catch Exception _ nil)))
           disbursement-amount (when-let [s (get-param "disbursement-amount")]
                                 (try (bigdec s) (catch Exception _ nil)))
           disbursement-reference (get-param "disbursement-reference")
@@ -623,8 +633,9 @@
         (let [origination-data (cond-> {:date date
                                         :disbursement-amount disbursement-amount
                                         :disbursement-reference disbursement-reference}
-                                 fee-deduction (assoc :fee-deduction fee-deduction)
+                                 (seq fee-settlements) (assoc :fee-settlements fee-settlements)
                                  deposit-from-funding (assoc :deposit-from-funding deposit-from-funding)
+                                 installment-prepayment (assoc :installment-prepayment installment-prepayment)
                                  disbursement-iban (assoc :disbursement-iban disbursement-iban)
                                  disbursement-bank (assoc :disbursement-bank disbursement-bank)
                                  excess-return (assoc :excess-return excess-return))
@@ -702,6 +713,497 @@
         (-> (response/redirect (str "/contracts/" contract-id-str))
             (assoc :flash {:type :error
                            :message (str "Error: " (.getMessage e))}))))))
+
+;; ============================================================
+;; History Tab Handler
+;; ============================================================
+
+(defn history-tab-handler
+  "Handle GET /contracts/:id/history-tab — HTMX partial for history tab.
+
+   Query params:
+   - page: page number (default 1)
+   - entity-types: comma-separated (payment,installment,fee,...)
+   - from-date: filter from date (YYYY-MM-DD)
+   - to-date: filter to date (YYYY-MM-DD)
+
+   Returns: HTML fragment for HTMX swap into tab content area."
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          params (:query-params request)
+          page (try (Integer/parseInt (or (get params "page") "1"))
+                    (catch Exception _ 1))
+          per-page 25
+          entity-types-str (get params "entity-types")
+          entity-types (when (and entity-types-str (not (str/blank? entity-types-str)))
+                         (set (map keyword (str/split entity-types-str #","))))
+          from-date (when-let [d (get params "from-date")]
+                      (try (dates/->date (dates/parse-date d))
+                           (catch Exception _ nil)))
+          to-date (when-let [d (get params "to-date")]
+                    (try (dates/->date (dates/parse-date d))
+                         (catch Exception _ nil)))]
+
+      (if-not contract-id
+        {:status 400
+         :headers {"Content-Type" "text/html; charset=utf-8"}
+         :body "<div>Invalid contract ID</div>"}
+
+        (let [conn (:conn request)
+              db (d/db conn)
+              raw-history (contract/get-comprehensive-history
+                            conn db contract-id
+                            {:entity-types entity-types
+                             :from-date from-date
+                             :to-date to-date})
+              entity-ids (contract/get-contract-entity-ids db contract-id)
+              entity-labels (contract/build-entity-label-cache db entity-ids)
+              formatted (contract/format-history-for-display raw-history entity-labels)
+              ;; Paginate (most recent first)
+              reversed (vec (reverse formatted))
+              total (count reversed)
+              total-pages (max 1 (int (Math/ceil (/ total (double per-page)))))
+              safe-page (min page total-pages)
+              offset (* (dec safe-page) per-page)
+              page-items (subvec reversed
+                                 (min offset total)
+                                 (min (+ offset per-page) total))
+              filters {:entity-types entity-types
+                       :from-date (get params "from-date")
+                       :to-date (get params "to-date")}
+              pagination {:page safe-page
+                          :per-page per-page
+                          :total total
+                          :total-pages total-pages}]
+
+          (log/info "History tab loaded" {:contract-id contract-id
+                                          :total-txs total
+                                          :page safe-page})
+
+          {:status 200
+           :headers {"Content-Type" "text/html; charset=utf-8"}
+           :body (str (h/html
+                        (views/history-tab-content
+                          contract-id page-items filters pagination)))})))
+
+    (catch Throwable e
+      (log/error e "Error loading history tab")
+      {:status 200
+       :headers {"Content-Type" "text/html; charset=utf-8"}
+       :body (str "<div style=\"padding: 1rem; color: #991b1b; background: #fef2f2; border-radius: 0.375rem;\">Error loading history: "
+                  (.getMessage e) "</div>")})))
+
+;; ============================================================
+;; Party Handlers
+;; ============================================================
+
+(defn list-parties-handler
+  "Handle GET /parties - list all parties.
+
+   Query params:
+   - type: optional filter — \"company\" or \"person\"
+
+   Returns: HTML page with party list"
+  [request]
+  (try
+    (let [db (d/db (:conn request))
+          type-str (get-in request [:query-params "type"])
+          party-type (when type-str
+                       (keyword "party.type" type-str))
+          parties (party/list-parties db :type party-type)]
+      (log/info "Listed parties" {:count (count parties) :type party-type})
+      (-> (response/response
+           (views/party-list-page parties))
+          (response/content-type "text/html; charset=utf-8")))
+    (catch Exception e
+      (log/error e "Error listing parties")
+      (-> (response/response (views/error-500-page e))
+          (response/status 500)
+          (response/content-type "text/html; charset=utf-8")))))
+
+(defn new-party-handler
+  "Handle GET /parties/new - render party creation form.
+
+   Returns: HTML page with party form"
+  [_request]
+  (-> (response/response (views/party-form-page nil))
+      (response/content-type "text/html; charset=utf-8")))
+
+(defn create-party-handler
+  "Handle POST /parties - create a new party.
+
+   Form params:
+   - type: \"company\" or \"person\"
+   - legal-name: party legal name
+   - cr-number: Commercial Registration (companies)
+   - national-id: National ID (persons)
+   - email, phone, address: optional contact info
+
+   Returns: Redirect to party detail or re-render form with errors"
+  [request]
+  (try
+    (let [params (:form-params request)
+          get-param (fn [k] (let [v (get params k)]
+                              (when-not (str/blank? v) v)))
+          party-type (when-let [t (get-param "type")]
+                       (keyword "party.type" t))
+          data (cond-> {:party/type party-type
+                        :party/legal-name (get-param "legal-name")}
+                 (get-param "cr-number")
+                 (assoc :party/cr-number (get-param "cr-number"))
+
+                 (get-param "national-id")
+                 (assoc :party/national-id (get-param "national-id"))
+
+                 (get-param "email")
+                 (assoc :party/email (get-param "email"))
+
+                 (get-param "phone")
+                 (assoc :party/phone (get-param "phone"))
+
+                 (get-param "address")
+                 (assoc :party/address (get-param "address")))
+          validation (party/validate-party-data data)]
+
+      (if-not (:valid? validation)
+        (do
+          (log/warn "Party validation failed" {:errors (:errors validation)})
+          (-> (response/response
+               (views/party-form-page nil {:errors (:errors validation) :values params}))
+              (response/content-type "text/html; charset=utf-8")))
+
+        (let [result (party/create-party (:conn request) data "web-user")
+              party-id (:party-id result)]
+          (log/info "Party created" {:party-id party-id
+                                      :type party-type
+                                      :name (get-param "legal-name")})
+          (response/redirect (str "/parties/" party-id)))))
+
+    (catch Exception e
+      (log/error e "Error creating party")
+      (-> (response/response (views/error-500-page e))
+          (response/status 500)
+          (response/content-type "text/html; charset=utf-8")))))
+
+(defn view-party-handler
+  "Handle GET /parties/:id - view party detail.
+
+   Path params:
+   - id: party UUID
+
+   Returns: HTML page with party detail"
+  [request]
+  (try
+    (let [party-id-str (get-in request [:path-params :id])
+          party-id (try (parse-uuid party-id-str) (catch Exception _ nil))]
+
+      (if-not party-id
+        (-> (response/response (views/error-404-page))
+            (response/status 404)
+            (response/content-type "text/html; charset=utf-8"))
+
+        (let [db (d/db (:conn request))
+              p (party/get-party db party-id)]
+
+          (if-not p
+            (-> (response/response (views/error-404-page))
+                (response/status 404)
+                (response/content-type "text/html; charset=utf-8"))
+
+            (let [contracts (party/get-party-contracts db party-id)
+                  ownerships (if (= :party.type/company (:party/type p))
+                               (party/get-ownership db party-id)
+                               [])
+                  owns (party/get-ownerships-for-party db party-id)]
+              (log/info "Viewed party" {:id party-id
+                                         :name (:party/legal-name p)})
+              (-> (response/response
+                   (views/party-detail-page p contracts ownerships owns))
+                  (response/content-type "text/html; charset=utf-8")))))))
+
+    (catch Exception e
+      (log/error e "Error viewing party")
+      (-> (response/response (views/error-500-page e))
+          (response/status 500)
+          (response/content-type "text/html; charset=utf-8")))))
+
+(defn update-party-handler
+  "Handle POST /parties/:id/update - update party mutable fields.
+
+   Form params:
+   - legal-name, email, phone, address
+
+   Returns: Redirect to party detail"
+  [request]
+  (try
+    (let [party-id-str (get-in request [:path-params :id])
+          party-id (try (parse-uuid party-id-str) (catch Exception _ nil))
+          params (:form-params request)
+          get-param (fn [k] (let [v (get params k)]
+                              (when-not (str/blank? v) v)))
+          updates (cond-> {}
+                    (get-param "legal-name")
+                    (assoc :party/legal-name (get-param "legal-name"))
+
+                    (get-param "email")
+                    (assoc :party/email (get-param "email"))
+
+                    (get-param "phone")
+                    (assoc :party/phone (get-param "phone"))
+
+                    (get-param "address")
+                    (assoc :party/address (get-param "address")))]
+
+      (if-not party-id
+        (-> (response/response (views/error-404-page))
+            (response/status 404)
+            (response/content-type "text/html; charset=utf-8"))
+
+        (do
+          (party/update-party (:conn request) party-id updates "web-user")
+          (log/info "Party updated" {:party-id party-id :fields (keys updates)})
+          (response/redirect (str "/parties/" party-id)))))
+
+    (catch Exception e
+      (log/error e "Error updating party")
+      (-> (response/response (views/error-500-page e))
+          (response/status 500)
+          (response/content-type "text/html; charset=utf-8")))))
+
+(defn add-guarantor-handler
+  "Handle POST /contracts/:id/guarantors - add guarantor to contract.
+
+   Form params:
+   - party-id: UUID of party to add as guarantor
+
+   Returns: Redirect to contract detail"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          party-id-str (get-in request [:form-params "party-id"])
+          party-id (when party-id-str
+                     (try (parse-uuid party-id-str) (catch Exception _ nil)))]
+
+      (if (and contract-id party-id)
+        (do
+          (party/add-guarantor (:conn request) contract-id party-id "web-user")
+          (log/info "Guarantor added" {:contract-id contract-id :party-id party-id})
+          (response/redirect (str "/contracts/" contract-id)))
+
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error :message "Invalid party ID."}))))
+
+    (catch Exception e
+      (log/error e "Error adding guarantor")
+      (let [contract-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error
+                           :message (str "Error: " (.getMessage e))}))))))
+
+(defn remove-guarantor-handler
+  "Handle POST /contracts/:id/guarantors/:party-id/remove - remove guarantor.
+
+   Returns: Redirect to contract detail"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          party-id-str (get-in request [:path-params :party-id])
+          party-id (when party-id-str
+                     (try (parse-uuid party-id-str) (catch Exception _ nil)))]
+
+      (if (and contract-id party-id)
+        (do
+          (party/remove-guarantor (:conn request) contract-id party-id "web-user")
+          (log/info "Guarantor removed" {:contract-id contract-id :party-id party-id})
+          (response/redirect (str "/contracts/" contract-id)))
+
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error :message "Invalid party ID."}))))
+
+    (catch Exception e
+      (log/error e "Error removing guarantor")
+      (let [contract-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error
+                           :message (str "Error: " (.getMessage e))}))))))
+
+(defn add-signatory-handler
+  "Handle POST /contracts/:id/signatories - add authorized signatory.
+
+   Form params:
+   - party-id: UUID of person party to add as signatory
+
+   Returns: Redirect to contract detail"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          party-id-str (get-in request [:form-params "party-id"])
+          party-id (when party-id-str
+                     (try (parse-uuid party-id-str) (catch Exception _ nil)))]
+
+      (if (and contract-id party-id)
+        (do
+          (party/add-signatory (:conn request) contract-id party-id "web-user")
+          (log/info "Signatory added" {:contract-id contract-id :party-id party-id})
+          (response/redirect (str "/contracts/" contract-id)))
+
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error :message "Invalid party ID."}))))
+
+    (catch Exception e
+      (log/error e "Error adding signatory")
+      (let [contract-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error
+                           :message (str "Error: " (.getMessage e))}))))))
+
+(defn remove-signatory-handler
+  "Handle POST /contracts/:id/signatories/:party-id/remove - remove signatory.
+
+   Returns: Redirect to contract detail"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          party-id-str (get-in request [:path-params :party-id])
+          party-id (when party-id-str
+                     (try (parse-uuid party-id-str) (catch Exception _ nil)))]
+
+      (if (and contract-id party-id)
+        (do
+          (party/remove-signatory (:conn request) contract-id party-id "web-user")
+          (log/info "Signatory removed" {:contract-id contract-id :party-id party-id})
+          (response/redirect (str "/contracts/" contract-id)))
+
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error :message "Invalid party ID."}))))
+
+    (catch Exception e
+      (log/error e "Error removing signatory")
+      (let [contract-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error
+                           :message (str "Error: " (.getMessage e))}))))))
+
+(defn add-ownership-handler
+  "Handle POST /parties/:id/ownership - record ownership stake.
+
+   Form params:
+   - owner-party-id: UUID of owner party
+   - percentage: ownership percentage
+
+   Returns: Redirect to party detail"
+  [request]
+  (try
+    (let [company-id-str (get-in request [:path-params :id])
+          company-id (try (parse-uuid company-id-str) (catch Exception _ nil))
+          params (:form-params request)
+          owner-id-str (get params "owner-party-id")
+          owner-id (when owner-id-str
+                     (try (parse-uuid owner-id-str) (catch Exception _ nil)))
+          pct-str (get params "percentage")
+          percentage (when pct-str
+                       (try (bigdec pct-str) (catch Exception _ nil)))]
+
+      (if (and company-id owner-id percentage)
+        (let [db (d/db (:conn request))
+              validation (party/validate-ownership db {:owner-id owner-id
+                                                        :company-id company-id
+                                                        :percentage percentage})]
+          (if-not (:valid? validation)
+            (-> (response/redirect (str "/parties/" company-id))
+                (assoc :flash {:type :error
+                               :message (str/join "; " (map :message (:errors validation)))}))
+
+            (do
+              (party/record-ownership (:conn request) owner-id company-id percentage "web-user")
+              (log/info "Ownership recorded" {:company company-id :owner owner-id :pct percentage})
+              (response/redirect (str "/parties/" company-id)))))
+
+        (-> (response/redirect (str "/parties/" company-id-str))
+            (assoc :flash {:type :error :message "Invalid ownership data."}))))
+
+    (catch Exception e
+      (log/error e "Error recording ownership")
+      (let [company-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/parties/" company-id-str))
+            (assoc :flash {:type :error
+                           :message (str "Error: " (.getMessage e))}))))))
+
+(defn remove-ownership-handler
+  "Handle POST /parties/:id/ownership/:ownership-id/remove - remove ownership record.
+
+   Returns: Redirect to party detail"
+  [request]
+  (try
+    (let [company-id-str (get-in request [:path-params :id])
+          ownership-id-str (get-in request [:path-params :ownership-id])
+          ownership-id (when ownership-id-str
+                         (try (parse-uuid ownership-id-str) (catch Exception _ nil)))]
+
+      (if ownership-id
+        (do
+          (party/remove-ownership (:conn request) ownership-id "web-user")
+          (log/info "Ownership removed" {:ownership-id ownership-id})
+          (response/redirect (str "/parties/" company-id-str)))
+
+        (-> (response/redirect (str "/parties/" company-id-str))
+            (assoc :flash {:type :error :message "Invalid ownership ID."}))))
+
+    (catch Exception e
+      (log/error e "Error removing ownership")
+      (let [company-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/parties/" company-id-str))
+            (assoc :flash {:type :error
+                           :message (str "Error: " (.getMessage e))}))))))
+
+(defn search-parties-handler
+  "Handle GET /api/parties/search - search parties for HTMX autocomplete.
+
+   Query params:
+   - q: search query (matches against legal-name, cr-number, national-id)
+   - type: optional filter — \"company\" or \"person\"
+
+   Returns: HTML fragment with matching party options"
+  [request]
+  (try
+    (let [db (d/db (:conn request))
+          query (get-in request [:query-params "q"])
+          type-str (get-in request [:query-params "type"])
+          party-type (when type-str (keyword "party.type" type-str))
+          all-parties (party/list-parties db :type party-type)
+          matches (if (str/blank? query)
+                    all-parties
+                    (let [q (str/lower-case query)]
+                      (filter (fn [p]
+                                (or (str/includes? (str/lower-case (or (:party/legal-name p) "")) q)
+                                    (str/includes? (str/lower-case (or (:party/cr-number p) "")) q)
+                                    (str/includes? (str/lower-case (or (:party/national-id p) "")) q)))
+                              all-parties)))]
+      {:status 200
+       :headers {"Content-Type" "text/html; charset=utf-8"}
+       :body (str (h/html
+                   (if (empty? matches)
+                     [:div {:style "padding: 0.5rem; color: #6b7280;"} "No parties found."]
+                     [:div
+                      (for [p matches]
+                        [:div {:style "padding: 0.5rem; cursor: pointer; border-bottom: 1px solid #e5e7eb;"
+                               :onclick (str "selectParty('" (:party/id p) "', '" (:party/legal-name p) "')")
+                               :class "party-search-result"}
+                         [:strong (:party/legal-name p)]
+                         [:span {:style "margin-left: 0.5rem; color: #6b7280; font-size: 0.875rem;"}
+                          (or (:party/cr-number p) (:party/national-id p))]])])))})
+
+    (catch Exception e
+      (log/error e "Error searching parties")
+      {:status 500
+       :headers {"Content-Type" "text/html; charset=utf-8"}
+       :body "<div>Error searching parties</div>"})))
 
 ;; ============================================================
 ;; Development Helpers

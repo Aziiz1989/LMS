@@ -35,20 +35,33 @@
 ;; Helper Functions
 ;; ============================================================
 
+(def test-borrower-id
+  "Fixed UUID for test borrower party."
+  #uuid "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+(defn create-test-borrower
+  "Create a company party for use as borrower in tests."
+  [conn]
+  (d/transact conn
+              {:tx-data [{:party/id test-borrower-id
+                          :party/type :party.type/company
+                          :party/legal-name "Test Customer Co."
+                          :party/cr-number "CR-123456"}]}))
+
 (defn create-test-contract
   "Create a minimal test contract with fees and installments.
+   Note: status is derived from disbursed-at/written-off-at, maturity-date from installments.
 
    Returns contract-id."
   [conn contract-id]
+  (create-test-borrower conn)
   (d/transact conn
               {:tx-data [{:db/id "contract"
                           :contract/id contract-id
                           :contract/external-id (str "TEST-" (subs (str contract-id) 0 8))
-                          :contract/customer-name "Test Customer Co."
-                          :contract/customer-id "CR-123456"
-                          :contract/status :active
+                          :contract/borrower [:party/id test-borrower-id]
+                          :contract/disbursed-at #inst "2024-01-02"  ;; makes status :active
                           :contract/start-date #inst "2024-01-01"
-                          :contract/maturity-date #inst "2024-12-31"
                           :contract/principal 1200000M
                           :contract/security-deposit 60000M}
 
@@ -110,7 +123,8 @@
       (is (not (nil? contract)))
       (is (= contract-id (:contract/id contract)))
       (is (.startsWith (:contract/external-id contract) "TEST-"))
-      (is (= :active (:contract/status contract)))
+      ;; status is now derived, not stored - check disbursed-at instead
+      (is (some? (:contract/disbursed-at contract)))
       (is (= 1200000M (:contract/principal contract))))))
 
 (deftest get-fees-test
@@ -334,23 +348,12 @@
           _ (create-test-contract conn id-1)
           _ (create-test-contract conn id-2)
           db (d/db conn)
-          contracts (sut/list-contracts db nil)]
+          contracts (sut/list-contracts db)]
 
       (is (= 2 (count contracts)))
       (is (every? #(.startsWith (:external-id %) "TEST-") contracts))
-      (is (every? #(= :active (:status %)) contracts)))))
-
-(deftest list-contracts-with-filter
-  (testing "List contracts filtered by status"
-    (let [conn (get-test-conn)
-          id-1 (random-uuid)
-          _ (create-test-contract conn id-1)
-          db (d/db conn)
-          active-contracts (sut/list-contracts db :active)
-          closed-contracts (sut/list-contracts db :closed)]
-
-      (is (= 1 (count active-contracts)))
-      (is (= 0 (count closed-contracts))))))
+      ;; Status is no longer in list-contracts; check disbursed-at instead
+      (is (every? #(some? (:disbursed-at %)) contracts)))))
 
 ;; ============================================================
 ;; Principal Allocation Tests
@@ -360,15 +363,20 @@
   "Create a contract with fees suitable for testing principal allocation.
 
    Principal: 750,000. Admin fee: 64,687.50. Other costs: 2,000.
-   Two installments. Returns contract-id."
+   Two installments. Returns contract-id.
+   Note: No disbursed-at set (pre-disbursement state)."
   [conn contract-id]
+  (let [orig-borrower-id #uuid "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"]
+    (d/transact conn
+                {:tx-data [{:party/id orig-borrower-id
+                            :party/type :party.type/company
+                            :party/legal-name "Origination Test Co."
+                            :party/cr-number "CR-ORIG-001"}]}))
   (d/transact conn
               {:tx-data [{:db/id "contract"
                           :contract/id contract-id
                           :contract/external-id (str "ORIG-" (subs (str contract-id) 0 8))
-                          :contract/customer-name "Origination Test Co."
-                          :contract/customer-id "CR-ORIG-001"
-                          :contract/status :active
+                          :contract/borrower [:party/id #uuid "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"]
                           :contract/start-date #inst "2024-01-01"
                           :contract/principal 750000M
                           :contract/security-deposit 50000M}
@@ -517,3 +525,153 @@
         (is (= 1 (count pa-events)))
         (is (= 66687.50M (:amount (first pa-events))))
         (is (= "FUNDING-FEE" (:reference (first pa-events))))))))
+
+;; ============================================================
+;; Typed Principal Allocation Tests
+;; ============================================================
+
+(defn create-selective-fee-contract
+  "Create contract with two fees at different due dates for selective settlement testing.
+
+   Fee 1: management, 64,687.50, due Jan 1 (on/before origination)
+   Fee 2: processing, 2,000, due May 6 (after origination)
+   Two installments due Feb 1 and Mar 1.
+   Returns {:contract-id, :fee-1-id, :fee-2-id}."
+  [conn]
+  (let [contract-id (random-uuid)
+        fee-1-id (random-uuid)
+        fee-2-id (random-uuid)
+        borrower-id #uuid "cccccccc-dddd-eeee-ffff-111111111111"]
+    (d/transact conn
+                {:tx-data [{:party/id borrower-id
+                            :party/type :party.type/company
+                            :party/legal-name "Selective Fee Test Co."
+                            :party/cr-number "CR-SEL-001"}]})
+    (d/transact conn
+                {:tx-data [{:db/id "contract"
+                            :contract/id contract-id
+                            :contract/external-id (str "SEL-" (subs (str contract-id) 0 8))
+                            :contract/borrower [:party/id borrower-id]
+                            :contract/start-date #inst "2024-01-01"
+                            :contract/principal 750000M
+                            :contract/security-deposit 50000M}
+
+                           {:fee/id fee-1-id
+                            :fee/contract "contract"
+                            :fee/type :management
+                            :fee/amount 64687.50M
+                            :fee/due-date #inst "2024-01-01"}
+
+                           {:fee/id fee-2-id
+                            :fee/contract "contract"
+                            :fee/type :processing
+                            :fee/amount 2000M
+                            :fee/due-date #inst "2024-05-06"}
+
+                           {:installment/id (random-uuid)
+                            :installment/contract "contract"
+                            :installment/seq 1
+                            :installment/due-date #inst "2024-02-01"
+                            :installment/principal-due 375000M
+                            :installment/profit-due 15000M
+                            :installment/remaining-principal 750000M}
+
+                           {:installment/id (random-uuid)
+                            :installment/contract "contract"
+                            :installment/seq 2
+                            :installment/due-date #inst "2024-03-01"
+                            :installment/principal-due 375000M
+                            :installment/profit-due 15000M
+                            :installment/remaining-principal 375000M}
+
+                           {:db/id "datomic.tx"
+                            :tx/type :boarding
+                            :tx/contract "contract"
+                            :tx/author "test"}]})
+    {:contract-id contract-id :fee-1-id fee-1-id :fee-2-id fee-2-id}))
+
+(deftest per-fee-settlement-selective
+  (testing "Only selected fee's amount enters waterfall — unselected fee stays unpaid"
+    (let [conn (get-test-conn)
+          {:keys [contract-id fee-1-id]} (create-selective-fee-contract conn)]
+
+      ;; Settle only fee-1 (management, 64,687.50, due Jan 1) from principal
+      ;; Fee-2 (processing, 2,000, due May 6) is NOT selected
+      (ops/record-principal-allocation conn contract-id 64687.50M
+                                       #inst "2024-01-15" "test-user"
+                                       :type :fee-settlement
+                                       :fee-id fee-1-id
+                                       :reference "FUNDING-FEE-SETTLEMENT")
+
+      (let [state (sut/contract-state (d/db conn) contract-id test-as-of-date)]
+        ;; Fee 1 (management): paid via waterfall
+        (let [fee-1 (first (filter #(= :management (:type %)) (:fees state)))]
+          (is (= :paid (:status fee-1)))
+          (is (= 64687.50M (:paid fee-1))))
+
+        ;; Fee 2 (processing): still unpaid — not settled from principal
+        (let [fee-2 (first (filter #(= :processing (:type %)) (:fees state)))]
+          (is (= :unpaid (:status fee-2)))
+          (is (= 0M (:paid fee-2))))
+
+        ;; Total waterfall = 64,687.50 (only fee-1's allocation)
+        (is (= 64687.50M (:total-fees-paid state)))))))
+
+(deftest deposit-type-excluded-from-waterfall
+  (testing "Deposit principal-allocation does NOT affect waterfall total or fee payments"
+    (let [conn (get-test-conn)
+          contract-id (random-uuid)
+          _ (create-origination-contract conn contract-id)]
+
+      ;; Record a deposit-type allocation (should NOT flow through waterfall)
+      (ops/record-principal-allocation conn contract-id 50000M
+                                       #inst "2024-01-15" "test-user"
+                                       :type :deposit
+                                       :reference "FUNDING-DEPOSIT")
+
+      (let [state (sut/contract-state (d/db conn) contract-id test-as-of-date)]
+        ;; Fees should remain unpaid — deposit doesn't enter waterfall
+        (is (every? #(= :unpaid (:status %)) (:fees state)))
+        (is (= 0M (:total-fees-paid state)))
+
+        ;; Principal allocations exist but don't contribute to waterfall
+        (let [db (d/db conn)
+              allocations (sut/get-principal-allocations db contract-id)]
+          (is (= 1 (count allocations)))
+          (is (= :deposit (:principal-allocation/type (first allocations)))))))))
+
+(deftest installment-prepayment-flows-through-waterfall
+  (testing "Installment prepayment allocation enters waterfall and pays earliest installments"
+    (let [conn (get-test-conn)
+          contract-id (random-uuid)
+          _ (create-origination-contract conn contract-id)]
+
+      ;; First settle fees so waterfall can reach installments
+      (ops/record-principal-allocation conn contract-id 66687.50M
+                                       #inst "2024-01-15" "test-user"
+                                       :type :fee-settlement
+                                       :reference "FUNDING-FEE-SETTLEMENT")
+
+      ;; Then add installment prepayment
+      (ops/record-principal-allocation conn contract-id 100000M
+                                       #inst "2024-01-15" "test-user"
+                                       :type :installment-prepayment
+                                       :reference "INSTALLMENT-PREPAYMENT")
+
+      (let [state (sut/contract-state (d/db conn) contract-id test-as-of-date)]
+        ;; Fees fully paid
+        (is (every? #(= :paid (:status %)) (:fees state)))
+
+        ;; Installment 1 should be partially paid (100K after fees)
+        ;; Waterfall: 66687.50 (fees) + 100000 (prepay) = 166687.50
+        ;; Fees consume 66687.50, leaving 100000 for installments
+        ;; Inst 1: profit 15000 + principal up to 85000
+        (let [inst-1 (first (:installments state))]
+          (is (= 15000M (:profit-paid inst-1)))
+          (is (= 85000M (:principal-paid inst-1)))
+          (is (= :partial (:status inst-1))))
+
+        ;; Inst 2: nothing yet
+        (let [inst-2 (second (:installments state))]
+          (is (= 0M (:profit-paid inst-2)))
+          (is (= :scheduled (:status inst-2))))))))

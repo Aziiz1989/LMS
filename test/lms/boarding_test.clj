@@ -30,12 +30,24 @@
       (db/install-schema conn)
       conn)))
 
+(def test-borrower-id
+  "Fixed UUID for test borrower party."
+  #uuid "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+(defn create-test-borrower
+  "Create a company party for use as borrower in tests."
+  [conn]
+  (d/transact conn
+              {:tx-data [{:party/id test-borrower-id
+                          :party/type :party.type/company
+                          :party/legal-name "Test Co."
+                          :party/cr-number "CR-123"}]}))
+
 (def valid-contract-data
-  "Minimal valid contract data for tests."
+  "Minimal valid contract data for tests.
+   Note: status is derived, not stored."
   {:contract/external-id "TEST-001"
-   :contract/customer-name "Test Co."
-   :contract/customer-id "CR-123"
-   :contract/status :active
+   :contract/borrower [:party/id test-borrower-id]
    :contract/start-date #inst "2024-01-01"
    :contract/principal 200000M})
 
@@ -66,12 +78,10 @@
   (testing "Missing required contract fields return errors"
     (let [result (sut/validate-boarding-data {} [] [])]
       (is (false? (:valid? result)))
-      (is (>= (count (:errors result)) 6))  ;; 6 required fields
+      (is (>= (count (:errors result)) 4))  ;; 4 required fields (status is derived)
       (let [fields (set (map :field (:errors result)))]
         (is (contains? fields :contract/external-id))
-        (is (contains? fields :contract/customer-name))
-        (is (contains? fields :contract/customer-id))
-        (is (contains? fields :contract/status))
+        (is (contains? fields :contract/borrower))
         (is (contains? fields :contract/start-date))
         (is (contains? fields :contract/principal))))))
 
@@ -192,6 +202,7 @@
 (deftest validate-duplicate-external-id-test
   (testing "Duplicate external-id is rejected when DB provided"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           contract-id (random-uuid)]
 
       ;; Board a contract with external-id "TEST-001"
@@ -296,6 +307,7 @@
 (deftest board-new-contract-success-test
   (testing "Board new contract creates contract, schedule, and fees"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           result (sut/board-new-contract conn
                                          valid-contract-data
                                          valid-fees
@@ -335,6 +347,7 @@
 (deftest board-new-contract-generates-ids-test
   (testing "Board new contract generates IDs when not provided"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           result (sut/board-new-contract conn
                                          valid-contract-data  ;; no :contract/id
                                          valid-fees            ;; no :fee/id
@@ -346,6 +359,7 @@
 (deftest board-new-contract-validation-failure-test
   (testing "Board new contract with invalid data returns errors without writing"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           result (sut/board-new-contract conn
                                          {}  ;; missing everything
                                          valid-fees
@@ -357,12 +371,13 @@
 
       ;; Verify nothing was written to DB
       (let [db (d/db conn)
-            contracts (contract/list-contracts db nil)]
+            contracts (contract/list-contracts db)]
         (is (= 0 (count contracts)))))))
 
 (deftest board-new-contract-principal-mismatch-test
   (testing "Board new contract fails when installment principals don't sum to contract principal"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           bad-contract (assoc valid-contract-data :contract/principal 500000M)
           result (sut/board-new-contract conn bad-contract valid-fees valid-installments "test-user")]
       (is (false? (:success? result)))
@@ -370,7 +385,8 @@
 
 (deftest board-new-contract-duplicate-external-id-test
   (testing "Board new contract fails on duplicate external-id"
-    (let [conn (get-test-conn)]
+    (let [conn (get-test-conn)
+          _ (create-test-borrower conn)]
       ;; Board first contract
       (sut/board-new-contract conn valid-contract-data valid-fees valid-installments "test-user")
 
@@ -386,6 +402,7 @@
 (deftest board-existing-contract-success-test
   (testing "Board existing contract with disbursement and payments"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           ;; Use a unique external-id
           contract-data (assoc valid-contract-data :contract/external-id "EXISTING-001")
           disbursement {:amount 200000M
@@ -434,6 +451,7 @@
 (deftest board-existing-contract-skips-principle-rows-test
   (testing "Board existing contract skips 'Principle' rows via map-tx-type"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           contract-data (assoc valid-contract-data :contract/external-id "SKIP-001")
           payments [{:date #inst "2024-01-15"
                      :external-id "SKIP-001"
@@ -459,6 +477,7 @@
 (deftest board-existing-contract-no-disbursement-test
   (testing "Board existing contract without disbursement"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           contract-data (assoc valid-contract-data :contract/external-id "NODISB-001")
           result (sut/board-existing-contract conn contract-data valid-fees valid-installments
                                               [] nil "test-user")]
@@ -475,6 +494,7 @@
 (deftest board-existing-contract-validation-failure-test
   (testing "Board existing contract with invalid data returns errors"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           result (sut/board-existing-contract conn {} valid-fees valid-installments
                                               [] nil "test-user")]
       (is (false? (:success? result)))
@@ -487,6 +507,7 @@
 (deftest csv-to-board-round-trip-test
   (testing "Parse schedule CSV then board the contract end-to-end"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           schedule-csv "Seq,Due Date,Principal Due,Profit Due,Remaining Principal
 1,2024-01-31,100000,5000,200000
 2,2024-02-28,100000,5000,100000"
@@ -510,26 +531,31 @@
 (deftest originate-full-flow-test
   (testing "Originate executes funding-day operations and settles fees"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           ;; Board a contract with a 1,000 fee
           result (sut/board-new-contract conn
-                   (assoc valid-contract-data :contract/external-id "ORIG-001"
-                                             :contract/security-deposit 10000M)
-                   valid-fees valid-installments "test-user")
+                                         (assoc valid-contract-data :contract/external-id "ORIG-001"
+                                                :contract/security-deposit 10000M)
+                                         valid-fees valid-installments "test-user")
           contract-id (:contract-id result)]
 
       (is (true? (:success? result)))
 
-      ;; Originate: fee deduction (1K) + deposit from funding (10K) + disbursement (189K)
-      (let [orig-result (sut/originate conn contract-id
-                          {:date #inst "2024-01-15"
-                           :fee-deduction 1000M
-                           :deposit-from-funding 10000M
-                           :disbursement-amount 189000M
-                           :disbursement-reference "WT-001"}
-                          "test-user")]
+      ;; Look up fee-id to construct per-fee settlement
+      (let [db (d/db conn)
+            fees (contract/get-fees db contract-id)
+            fee-id (:fee/id (first fees))
+            ;; Originate: fee settlement (1K) + deposit from funding (10K) + disbursement (189K)
+            orig-result (sut/originate conn contract-id
+                                       {:date #inst "2024-01-15"
+                                        :fee-settlements [{:fee-id fee-id :amount 1000M}]
+                                        :deposit-from-funding 10000M
+                                        :disbursement-amount 189000M
+                                        :disbursement-reference "WT-001"}
+                                       "test-user")]
 
         (is (true? (:success? orig-result)))
-        (is (= [:principal-allocation :deposit-from-funding :disbursement]
+        (is (= [:fee-settlements :deposit-from-funding :disbursement]
                (:steps orig-result)))
 
         ;; Verify contract state: fee should be paid
@@ -543,10 +569,10 @@
         (let [db (d/db conn)
               facts (contract/query-facts db contract-id)
               breakdown (contract/funding-breakdown
-                          (:contract facts)
-                          (:principal-allocations facts)
-                          (:deposits facts)
-                          (:disbursements facts))]
+                         (:contract facts)
+                         (:principal-allocations facts)
+                         (:deposits facts)
+                         (:disbursements facts))]
           (is (= 1000M (:fee-deductions breakdown)))
           (is (= 10000M (:deposit-from-funding breakdown)))
           (is (= 189000M (:merchant-disbursement breakdown)))
@@ -556,9 +582,10 @@
 (deftest originate-with-excess-return-test
   (testing "Originate with customer excess return"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           result (sut/board-new-contract conn
-                   (assoc valid-contract-data :contract/external-id "ORIG-002")
-                   valid-fees valid-installments "test-user")
+                                         (assoc valid-contract-data :contract/external-id "ORIG-002")
+                                         valid-fees valid-installments "test-user")
           contract-id (:contract-id result)]
 
       ;; Customer pre-paid 5K towards fee (only 1K needed → 4K excess)
@@ -567,11 +594,11 @@
 
       ;; Originate: no fee deduction needed (pre-paid), disbursement + excess
       (let [orig-result (sut/originate conn contract-id
-                          {:date #inst "2024-01-15"
-                           :disbursement-amount 196000M
-                           :disbursement-reference "WT-002"
-                           :excess-return 4000M}
-                          "test-user")]
+                                       {:date #inst "2024-01-15"
+                                        :disbursement-amount 196000M
+                                        :disbursement-reference "WT-002"
+                                        :excess-return 4000M}
+                                       "test-user")]
 
         (is (true? (:success? orig-result)))
         (is (= [:disbursement :excess-return] (:steps orig-result)))
@@ -584,17 +611,18 @@
 (deftest originate-minimal-test
   (testing "Originate with only mandatory disbursement (no deductions)"
     (let [conn (get-test-conn)
+          _ (create-test-borrower conn)
           result (sut/board-new-contract conn
-                   (assoc valid-contract-data :contract/external-id "ORIG-003")
-                   [] ;; no fees
-                   valid-installments "test-user")
+                                         (assoc valid-contract-data :contract/external-id "ORIG-003")
+                                         [] ;; no fees
+                                         valid-installments "test-user")
           contract-id (:contract-id result)
           ;; No fees, no deposits — just disburse the full principal
           orig-result (sut/originate conn contract-id
-                        {:date #inst "2024-01-15"
-                         :disbursement-amount 200000M
-                         :disbursement-reference "WT-003"}
-                        "test-user")]
+                                     {:date #inst "2024-01-15"
+                                      :disbursement-amount 200000M
+                                      :disbursement-reference "WT-003"}
+                                     "test-user")]
 
       (is (true? (:success? orig-result)))
       (is (= [:disbursement] (:steps orig-result))))))

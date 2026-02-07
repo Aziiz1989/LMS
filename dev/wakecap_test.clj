@@ -117,7 +117,6 @@
          :contract/external-id "3290-H-2025"
          :contract/customer-name "WakeCap Saudi Information Systems Technology Company"
          :contract/customer-id "7016779188"
-         :contract/status :active
          :contract/start-date start-date
          :contract/principal principal
          :contract/security-deposit 0M

@@ -60,8 +60,8 @@
                      (swap! errors conj {:field field :message message}))]
 
     ;; 1. Required contract fields
-    (doseq [k [:contract/external-id :contract/customer-name
-               :contract/customer-id :contract/status
+    ;; Note: status is derived, not stored
+    (doseq [k [:contract/external-id :contract/borrower
                :contract/start-date :contract/principal]]
       (when-not (get contract-data k)
         (add-error! k (str "Missing required field: " (name k)))))
@@ -70,6 +70,12 @@
     (when-let [p (:contract/principal contract-data)]
       (when-not (pos? p)
         (add-error! :contract/principal "Principal must be positive")))
+
+    ;; 2b. Days-to-first-installment must be positive if provided
+    (when-let [d (:contract/days-to-first-installment contract-data)]
+      (when-not (and (integer? d) (pos? d))
+        (add-error! :contract/days-to-first-installment
+                    "Days to first installment must be a positive integer")))
 
     ;; 3. Installment required fields
     (doseq [[idx inst] (map-indexed vector installments)]
@@ -262,9 +268,7 @@
    Usage:
      (board-new-contract conn
        {:contract/external-id \"LOAN-2024-001\"
-        :contract/customer-name \"Customer Co.\"
-        :contract/customer-id \"CR-123\"
-        :contract/status :active
+        :contract/borrower [:party/id borrower-party-id]
         :contract/start-date #inst \"2024-01-01\"
         :contract/principal 1000000M}
        [{:fee/type :management :fee/amount 5000M :fee/due-date #inst \"2024-01-01\"}]
@@ -436,10 +440,11 @@
    - contract-id: UUID of the boarded contract
    - origination-data: Map with:
      - :date (required) — origination/funding business date
-     - :fee-deduction (optional) — amount allocated from principal to settle fees.
-                                    Omit if fees fully pre-paid by customer.
+     - :fee-settlements (optional) — vector of {:fee-id uuid :amount bigdec}
+                                      for each fee being settled from principal.
      - :deposit-from-funding (optional) — amount deducted from principal for deposit.
                                            Omit if deposit fully pre-paid.
+     - :installment-prepayment (optional) — lump-sum amount for installment prepayment.
      - :disbursement-amount (required) — actual amount wired to merchant
      - :disbursement-reference (required) — wire transfer reference
      - :disbursement-iban (optional) — destination IBAN
@@ -450,14 +455,14 @@
 
    Returns:
    {:success? true
-    :steps [:principal-allocation :deposit-from-funding :disbursement]}
+    :steps [:fee-settlements :deposit-from-funding :disbursement]}
    or
    {:success? false :error \"...\" :completed-steps [...]}
 
    Usage:
      (originate conn contract-id
        {:date #inst \"2024-01-15\"
-        :fee-deduction 46687.50M
+        :fee-settlements [{:fee-id fee-uuid :amount 46687.50M}]
         :deposit-from-funding 40000M
         :disbursement-amount 533312.50M
         :disbursement-reference \"WT-001\"
@@ -465,27 +470,44 @@
         :disbursement-bank \"ANB\"}
        \"user-1\")"
   [conn contract-id origination-data user-id]
-  (let [{:keys [date fee-deduction deposit-from-funding
+  (let [{:keys [date fee-settlements deposit-from-funding
+                installment-prepayment
                 disbursement-amount disbursement-reference
                 disbursement-iban disbursement-bank
                 excess-return]} origination-data
         completed (atom [])]
     (try
-      ;; 1. Principal allocation (fees deducted from funding)
-      (when (and fee-deduction (pos? fee-deduction))
-        (ops/record-principal-allocation conn contract-id fee-deduction date user-id
-                                         :reference "FUNDING-FEE-SETTLEMENT")
-        (swap! completed conj :principal-allocation)
-        (log/info "Principal allocation recorded"
-                  {:contract-id contract-id :amount fee-deduction}))
+      ;; 1. Per-fee principal allocations (fees settled from funding)
+      (when (seq fee-settlements)
+        (doseq [{:keys [fee-id amount]} fee-settlements]
+          (ops/record-principal-allocation conn contract-id amount date user-id
+                                           :fee-id fee-id :type :fee-settlement
+                                           :reference "FUNDING-FEE-SETTLEMENT"))
+        (swap! completed conj :fee-settlements)
+        (log/info "Fee settlements recorded"
+                  {:contract-id contract-id
+                   :count (count fee-settlements)
+                   :total (reduce + 0M (map :amount fee-settlements))}))
 
-      ;; 2. Deposit from funding
+      ;; 2. Deposit from funding (both principal-allocation record + deposit entity)
       (when (and deposit-from-funding (pos? deposit-from-funding))
+        (ops/record-principal-allocation conn contract-id deposit-from-funding date user-id
+                                         :type :deposit
+                                         :reference "FUNDING-DEPOSIT")
         (ops/receive-deposit conn contract-id deposit-from-funding date user-id
                              :source :funding)
         (swap! completed conj :deposit-from-funding)
         (log/info "Deposit from funding recorded"
                   {:contract-id contract-id :amount deposit-from-funding}))
+
+      ;; 3. Installment prepayment from funding
+      (when (and installment-prepayment (pos? installment-prepayment))
+        (ops/record-principal-allocation conn contract-id installment-prepayment date user-id
+                                         :type :installment-prepayment
+                                         :reference "INSTALLMENT-PREPAYMENT")
+        (swap! completed conj :installment-prepayment)
+        (log/info "Installment prepayment recorded"
+                  {:contract-id contract-id :amount installment-prepayment}))
 
       ;; 3. Merchant disbursement
       (ops/record-disbursement conn contract-id disbursement-amount date
@@ -529,11 +551,10 @@
   (db/install-schema conn)
 
   ;; Validate boarding data (pure — no DB needed)
+  ;; Note: status is derived, not passed
   (boarding/validate-boarding-data
    {:contract/external-id "TEST-001"
-    :contract/customer-name "Test Co."
-    :contract/customer-id "CR-123"
-    :contract/status :active
+    :contract/borrower [:party/id #uuid "00000000-0000-0000-0000-000000000001"]
     :contract/start-date #inst "2024-01-01"
     :contract/principal 200000M}
    [{:fee/type :management :fee/amount 1000M :fee/due-date #inst "2024-01-01"}]
@@ -554,12 +575,11 @@
    "Seq,Due Date,Principal Due,Profit Due,Remaining Principal\n1,2024-01-31,100000,5000,200000\n2,2024-02-28,100000,5000,100000"
    200000M)
 
-  ;; Board new contract
+  ;; Board new contract (status derived as :pending until disbursement)
+  ;; Prerequisite: create party first via lms.party/create-party
   (boarding/board-new-contract conn
     {:contract/external-id "BOARD-001"
-     :contract/customer-name "Test Co."
-     :contract/customer-id "CR-123"
-     :contract/status :active
+     :contract/borrower [:party/id borrower-party-id]
      :contract/start-date #inst "2024-01-01"
      :contract/principal 200000M}
     [{:fee/type :management :fee/amount 1000M :fee/due-date #inst "2024-01-01"}]

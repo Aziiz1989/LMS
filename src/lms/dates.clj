@@ -41,3 +41,9 @@
   "True if date a is after date b (calendar day comparison)."
   [^java.util.Date a ^java.util.Date b]
   (.isAfter (->local-date a) (->local-date b)))
+
+(defn add-days
+  "Add n days to a java.util.Date, returning a new java.util.Date.
+   Negative values subtract days."
+  ^java.util.Date [^java.util.Date date ^long days]
+  (->date (.plusDays (->local-date date) days)))

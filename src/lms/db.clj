@@ -2,7 +2,10 @@
   "Datomic schema and connection management.
 
    This namespace defines the complete schema for the LMS:
-   - Contract: identity + terms + step-up rules
+   - Party: legal entity (company or person)
+   - Contract: identity + terms + step-up rules + party refs
+   - Facility: credit line + party ref
+   - Ownership: stake in a company (between parties)
    - Installment: repayment schedule
    - Fee: upfront/recurring fees
    - Payment: money received from customer (entity)
@@ -43,30 +46,26 @@
     :db/cardinality :db.cardinality/one
     :db/doc         "Jira key or LOS reference (e.g., LOAN-2023-001)"}
 
-   {:db/ident       :contract/customer-name
-    :db/valueType   :db.type/string
+   ;; Party references
+   {:db/ident       :contract/borrower
+    :db/valueType   :db.type/ref
     :db/cardinality :db.cardinality/one
-    :db/doc         "Customer legal name"}
+    :db/doc         "Reference to party (company) that is the borrower on this contract."}
 
-   {:db/ident       :contract/customer-id
-    :db/valueType   :db.type/string
-    :db/cardinality :db.cardinality/one
-    :db/doc         "Customer identifier (CR number, national ID, etc.)"}
+   {:db/ident       :contract/guarantors
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/many
+    :db/doc         "References to parties (person or company) guaranteeing this contract."}
 
-   {:db/ident       :contract/status
-    :db/valueType   :db.type/keyword
-    :db/cardinality :db.cardinality/one
-    :db/doc         "Contract status: :active :closed :written-off :refinanced"}
+   {:db/ident       :contract/authorized-signatories
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/many
+    :db/doc         "References to parties (persons) authorized to sign this contract."}
 
    {:db/ident       :contract/start-date
     :db/valueType   :db.type/instant
     :db/cardinality :db.cardinality/one
     :db/doc         "Contract start date (disbursement date)"}
-
-   {:db/ident       :contract/maturity-date
-    :db/valueType   :db.type/instant
-    :db/cardinality :db.cardinality/one
-    :db/doc         "Contract maturity date (final payment date)"}
 
    {:db/ident       :contract/principal
     :db/valueType   :db.type/bigdec
@@ -132,14 +131,28 @@
     :db/cardinality :db.cardinality/one
     :db/doc         "Net financing amount (صافي مبلغ التمويل) from signed contract.
                      Contractual fact — what was agreed after fee deductions.
-                     Derivable as principal - fees, but stored because it appears on
-                     the signed contract and serves as reconciliation reference."}
+                     This is the documentary fact from the signed contract. It may differ
+                     from principal - sum(fees) if fees were corrected after signing."}
 
-   ;; Refinancing - relationship to prior contract
-   {:db/ident       :contract/refinances
-    :db/valueType   :db.type/ref
+   ;; Lifecycle facts (status is derived from these)
+   {:db/ident       :contract/disbursed-at
+    :db/valueType   :db.type/instant
     :db/cardinality :db.cardinality/one
-    :db/doc         "Reference to contract being refinanced. Nil if not a refinancing."}
+    :db/doc         "When funding was disbursed. Nil = pre-disbursement (pending).
+                     Once set, contract is active and payment schedule starts."}
+
+   {:db/ident       :contract/written-off-at
+    :db/valueType   :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc         "When board approved write-off. Nil = not written off.
+                     Regulatory fact requiring approval, affects GL and SIMAH reporting."}
+
+   {:db/ident       :contract/days-to-first-installment
+    :db/valueType   :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Days from disbursement date to first installment due date.
+                     Contractual term. At disbursement, all schedule dates are
+                     shifted so first installment falls on disbursed-at + this value."}
 
    ;; ════════════════════════════════════════════════════════════
    ;; FACILITY (credit line)
@@ -158,15 +171,10 @@
     :db/cardinality :db.cardinality/one
     :db/doc         "LOS reference (e.g., PIP-1283621)"}
 
-   {:db/ident       :facility/customer-id
-    :db/valueType   :db.type/string
+   {:db/ident       :facility/party
+    :db/valueType   :db.type/ref
     :db/cardinality :db.cardinality/one
-    :db/doc         "Customer identifier (CR number)"}
-
-   {:db/ident       :facility/customer-name
-    :db/valueType   :db.type/string
-    :db/cardinality :db.cardinality/one
-    :db/doc         "Customer name (denormalized for convenience)"}
+    :db/doc         "Reference to party (company) this facility belongs to."}
 
    {:db/ident       :facility/limit
     :db/valueType   :db.type/bigdec
@@ -187,6 +195,84 @@
     :db/valueType   :db.type/instant
     :db/cardinality :db.cardinality/one
     :db/doc         "Facility creation timestamp"}
+
+   ;; ════════════════════════════════════════════════════════════
+   ;; PARTY (legal entity — company or natural person)
+   ;; ════════════════════════════════════════════════════════════
+   ;; Unified party concept following industry standard (BIAN, FIBO).
+   ;; Type-specific attributes (cr-number, national-id) are only asserted
+   ;; for the relevant party type.
+
+   {:db/ident       :party/id
+    :db/valueType   :db.type/uuid
+    :db/unique      :db.unique/identity
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Unique identifier for party"}
+
+   {:db/ident       :party/type
+    :db/valueType   :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Party type: :party.type/company or :party.type/person"}
+
+   {:db/ident       :party/legal-name
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Legal name — trade name for companies, full name for persons."}
+
+   {:db/ident       :party/cr-number
+    :db/valueType   :db.type/string
+    :db/unique      :db.unique/value
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Commercial Registration number. Companies only."}
+
+   {:db/ident       :party/national-id
+    :db/valueType   :db.type/string
+    :db/unique      :db.unique/value
+    :db/cardinality :db.cardinality/one
+    :db/doc         "National ID or Iqama number. Persons only."}
+
+   {:db/ident       :party/email
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Contact email (optional)."}
+
+   {:db/ident       :party/phone
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Contact phone (optional)."}
+
+   {:db/ident       :party/address
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Contact address (optional)."}
+
+   ;; ════════════════════════════════════════════════════════════
+   ;; OWNERSHIP (stake in a company — between parties)
+   ;; ════════════════════════════════════════════════════════════
+   ;; Records the fact that a party (person or company) owns a
+   ;; percentage of a company. Separate entity because it carries
+   ;; its own data (percentage).
+
+   {:db/ident       :ownership/id
+    :db/valueType   :db.type/uuid
+    :db/unique      :db.unique/identity
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Unique identifier for ownership record"}
+
+   {:db/ident       :ownership/owner
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reference to party (person or company) that owns shares."}
+
+   {:db/ident       :ownership/company
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reference to party (company) being owned."}
+
+   {:db/ident       :ownership/percentage
+    :db/valueType   :db.type/bigdec
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Ownership percentage (0-100)."}
 
    ;; ════════════════════════════════════════════════════════════
    ;; INSTALLMENT (schedule)
@@ -419,8 +505,10 @@
    ;; outside) and NOT a fee attribute (the fee doesn't know how it was
    ;; settled). It's its own concept: an allocation of principal funds.
    ;;
-   ;; Flows through waterfall as a 4th source alongside payments,
-   ;; refund disbursements, and deposit offsets.
+   ;; Records all deductions from principal at origination:
+   ;; - :fee-settlement — flows through waterfall
+   ;; - :installment-prepayment — flows through waterfall
+   ;; - :deposit — does NOT flow through waterfall (deposit ledger is separate)
    ;; Always positive amounts. Errors are retracted.
 
    {:db/ident       :principal-allocation/id
@@ -432,9 +520,8 @@
    {:db/ident       :principal-allocation/amount
     :db/valueType   :db.type/bigdec
     :db/cardinality :db.cardinality/one
-    :db/doc         "Amount allocated from principal to settle waterfall obligations (SAR).
-                     Always positive. Covers fees/costs deducted from principal at
-                     origination. Deposit deductions are handled by deposit entities."}
+    :db/doc         "Amount allocated from principal (SAR). Always positive.
+                     Covers fees, deposits, or installment prepayments deducted at origination."}
 
    {:db/ident       :principal-allocation/date
     :db/valueType   :db.type/instant
@@ -450,6 +537,19 @@
     :db/valueType   :db.type/string
     :db/cardinality :db.cardinality/one
     :db/doc         "External reference or description."}
+
+   {:db/ident       :principal-allocation/type
+    :db/valueType   :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Type: :fee-settlement, :deposit, :installment-prepayment.
+                     Determines whether allocation flows through waterfall.
+                     :fee-settlement and :installment-prepayment flow through waterfall.
+                     :deposit does not (deposit ledger is separate)."}
+
+   {:db/ident       :principal-allocation/fee
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Fee entity settled by this allocation (for :fee-settlement type)."}
 
    ;; ════════════════════════════════════════════════════════════
    ;; TRANSACTION METADATA (recording facts — on Datomic tx entity)
@@ -470,7 +570,8 @@
     :db/cardinality :db.cardinality/one
     :db/doc         "Admin event type (not for entity-creating txs):
                      :boarding         — contract created
-                     :rate-adjustment  — schedule profit amounts changed"}
+                     :rate-adjustment  — schedule profit amounts changed
+                     :write-off        — board-approved write-off decision"}
 
    {:db/ident       :tx/contract
     :db/valueType   :db.type/ref
@@ -622,17 +723,22 @@
          [(= ?ns "contract")]]
        db)
 
-  ;; 5. Create a test contract
+  ;; 5. Create a test party + contract
+  ;; Note: status is derived, not stored. maturity-date is derived from installments.
+  (def test-party-id (random-uuid))
+  (d/transact conn
+              {:tx-data [{:party/id test-party-id
+                          :party/type :party.type/company
+                          :party/legal-name "Test Customer"
+                          :party/cr-number "CR-123456"}]})
+
   (def test-contract-id (random-uuid))
   (d/transact conn
               {:tx-data [{:db/id "new-contract"
                           :contract/id test-contract-id
                           :contract/external-id "TEST-001"
-                          :contract/customer-name "Test Customer"
-                          :contract/customer-id "CR-123456"
-                          :contract/status :active
+                          :contract/borrower [:party/id test-party-id]
                           :contract/start-date #inst "2024-01-01"
-                          ;; maturity-date is now derived from installments
                           :contract/principal 1000000M
                           :contract/security-deposit 50000M}
 
