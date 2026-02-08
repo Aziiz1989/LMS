@@ -20,10 +20,13 @@
             [lms.party :as party]
             [lms.settlement :as settlement]
             [lms.views :as views]
+            [lms.pdf :as pdf]
             [datomic.client.api :as d]
             [ring.util.response :as response]
             [hiccup2.core :as h]
             [clojure.string :as str]
+            [clojure.java.io :as io]
+            [clojure.edn :as edn]
             [taoensso.timbre :as log]))
 
 ;; ============================================================
@@ -1204,6 +1207,249 @@
       {:status 500
        :headers {"Content-Type" "text/html; charset=utf-8"}
        :body "<div>Error searching parties</div>"})))
+
+;; ============================================================
+;; Document PDF Download Handler
+;; ============================================================
+
+(defn download-document-pdf-handler
+  "Handle GET /contracts/:id/documents/:type/:doc-id/download
+
+   Generates PDF on-demand from document snapshot and streams to user.
+
+   Path params:
+   - id: contract UUID
+   - type: clearance-letter | statement | contract-agreement
+   - doc-id: document UUID
+
+   Returns: PDF file stream or error"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          doc-type-str (get-in request [:path-params :type])
+          doc-id-str (get-in request [:path-params :doc-id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          doc-id (try (parse-uuid doc-id-str) (catch Exception _ nil))
+          doc-type (keyword doc-type-str)]
+
+      ;; Validate UUIDs
+      (when-not contract-id
+        (throw (ex-info "Invalid contract ID" {:id contract-id-str})))
+      (when-not doc-id
+        (throw (ex-info "Invalid document ID" {:id doc-id-str})))
+
+      ;; Validate document type
+      (when-not (#{:clearance-letter :statement :contract-agreement} doc-type)
+        (throw (ex-info "Invalid document type" {:type doc-type-str})))
+
+      ;; Query document entity
+      (let [db (d/db (:conn request))
+            doc-contract-attr (keyword (name doc-type) "contract")
+            pull-pattern ['* {doc-contract-attr [:contract/id]}]
+            doc (d/pull db pull-pattern
+                       [(keyword (name doc-type) "id") doc-id])]
+
+        (when-not doc
+          (log/warn "Document not found" {:type doc-type :id doc-id})
+          (throw (ex-info "Document not found" {:type doc-type :id doc-id})))
+
+        ;; Verify document belongs to this contract
+        (let [doc-contract-id (get-in doc [doc-contract-attr :contract/id])]
+          (when-not (= doc-contract-id contract-id)
+            (log/warn "Document does not belong to contract"
+                     {:doc-contract-id doc-contract-id :contract-id contract-id})
+            (throw (ex-info "Document not found" {}))))
+
+        ;; Extract snapshot
+        (let [snapshot-attr (keyword (name doc-type) "snapshot")
+              snapshot-edn (get doc snapshot-attr)]
+
+          (when-not snapshot-edn
+            (throw (ex-info "Document has no snapshot" {:type doc-type :id doc-id})))
+
+          ;; Enrich snapshot data with contract info for clearance letters
+          (let [enriched-snapshot-edn
+                (if (= doc-type :clearance-letter)
+                  ;; For clearance letters, add contract info to snapshot
+                  (let [snapshot-data (edn/read-string snapshot-edn)
+                        contract (contract/get-contract db contract-id)
+                        borrower (:contract/borrower contract)
+                        enriched-data (assoc snapshot-data
+                                            :contract {:external-id (:contract/external-id contract)
+                                                      :customer-name (:party/legal-name borrower)})
+                        ;; Add settlement-date from document entity
+                        enriched-with-date (assoc enriched-data
+                                                  :settlement-date
+                                                  (str (:clearance-letter/settlement-date doc)))]
+                    (pr-str enriched-with-date))
+                  ;; For statements and contract agreements, use snapshot as-is
+                  snapshot-edn)]
+
+            ;; Generate PDF
+            (log/info "Generating PDF" {:type doc-type :id doc-id})
+            (let [result (pdf/generate-pdf doc-type enriched-snapshot-edn)]
+
+              (if (:success? result)
+                (do
+                  (log/info "PDF generated successfully" {:type doc-type :id doc-id})
+                  {:status 200
+                   :headers {"Content-Type" "application/pdf"
+                             "Content-Disposition"
+                             (str "attachment; filename=\""
+                                  (name doc-type) "-" doc-id ".pdf\"")}
+                   :body (io/input-stream (:pdf-bytes result))})
+
+                (do
+                  (log/error "PDF generation failed" {:type doc-type :id doc-id :error (:error result)})
+                  (-> (response/response (str "PDF generation failed: " (:error result)))
+                      (response/status 500)))))))))
+
+    (catch Exception e
+      (log/error e "Error downloading document PDF")
+      (if (or (= "Document not found" (.getMessage e))
+              (= "Invalid document ID" (.getMessage e))
+              (= "Invalid contract ID" (.getMessage e)))
+        (-> (response/response (views/error-404-page))
+            (response/status 404)
+            (response/content-type "text/html; charset=utf-8"))
+        (-> (response/response (views/error-500-page e))
+            (response/status 500)
+            (response/content-type "text/html; charset=utf-8"))))))
+
+;; ============================================================
+;; Document Generation Handlers
+;; ============================================================
+
+(defn generate-clearance-letter-handler
+  "Handle POST /contracts/:id/generate-clearance-letter
+
+   Generates a clearance letter document.
+
+   Form params:
+   - settlement-date: Date string
+   - penalty-days: Integer
+
+   Returns: Redirect to contract page"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          settlement-date-str (get-in request [:form-params "settlement-date"])
+          penalty-days-str (get-in request [:form-params "penalty-days"])]
+
+      (when-not contract-id
+        (throw (ex-info "Invalid contract ID" {:id contract-id-str})))
+
+      (when-not settlement-date-str
+        (throw (ex-info "Settlement date is required" {})))
+
+      (when-not penalty-days-str
+        (throw (ex-info "Penalty days is required" {})))
+
+      (let [settlement-date (java.util.Date/from
+                             (.toInstant
+                              (.atStartOfDay
+                               (java.time.LocalDate/parse settlement-date-str
+                                                          java.time.format.DateTimeFormatter/ISO_LOCAL_DATE)
+                               (java.time.ZoneId/of "UTC"))))
+            penalty-days (Integer/parseInt penalty-days-str)]
+
+        (ops/generate-clearance-letter (:conn request) contract-id settlement-date
+                                      penalty-days "web-user")
+
+        (log/info "Generated clearance letter" {:contract-id contract-id
+                                                :settlement-date settlement-date
+                                                :penalty-days penalty-days})
+
+        (-> (response/redirect (str "/contracts/" contract-id))
+            (assoc :flash {:type :success :message "Clearance letter generated successfully"}))))
+
+    (catch Exception e
+      (log/error e "Error generating clearance letter")
+      (let [contract-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error :message (str "Error generating clearance letter: " (.getMessage e))}))))))
+
+(defn generate-statement-handler
+  "Handle POST /contracts/:id/generate-statement
+
+   Generates a statement document.
+
+   Form params:
+   - period-start: Date string
+   - period-end: Date string
+
+   Returns: Redirect to contract page"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          period-start-str (get-in request [:form-params "period-start"])
+          period-end-str (get-in request [:form-params "period-end"])]
+
+      (when-not contract-id
+        (throw (ex-info "Invalid contract ID" {:id contract-id-str})))
+
+      (when-not period-start-str
+        (throw (ex-info "Period start date is required" {})))
+
+      (when-not period-end-str
+        (throw (ex-info "Period end date is required" {})))
+
+      (let [period-start (java.util.Date/from
+                         (.toInstant
+                          (.atStartOfDay
+                           (java.time.LocalDate/parse period-start-str
+                                                      java.time.format.DateTimeFormatter/ISO_LOCAL_DATE)
+                           (java.time.ZoneId/of "UTC"))))
+            period-end (java.util.Date/from
+                       (.toInstant
+                        (.atStartOfDay
+                         (java.time.LocalDate/parse period-end-str
+                                                    java.time.format.DateTimeFormatter/ISO_LOCAL_DATE)
+                         (java.time.ZoneId/of "UTC"))))]
+
+        (ops/generate-statement (:conn request) contract-id period-start period-end "web-user")
+
+        (log/info "Generated statement" {:contract-id contract-id
+                                        :period-start period-start
+                                        :period-end period-end})
+
+        (-> (response/redirect (str "/contracts/" contract-id))
+            (assoc :flash {:type :success :message "Statement generated successfully"}))))
+
+    (catch Exception e
+      (log/error e "Error generating statement")
+      (let [contract-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error :message (str "Error generating statement: " (.getMessage e))}))))))
+
+(defn generate-contract-agreement-handler
+  "Handle POST /contracts/:id/generate-contract-agreement
+
+   Generates a contract agreement document.
+
+   Returns: Redirect to contract page"
+  [request]
+  (try
+    (let [contract-id-str (get-in request [:path-params :id])
+          contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))]
+
+      (when-not contract-id
+        (throw (ex-info "Invalid contract ID" {:id contract-id-str})))
+
+      (ops/generate-contract-agreement (:conn request) contract-id "web-user")
+
+      (log/info "Generated contract agreement" {:contract-id contract-id})
+
+      (-> (response/redirect (str "/contracts/" contract-id))
+          (assoc :flash {:type :success :message "Contract agreement generated successfully"})))
+
+    (catch Exception e
+      (log/error e "Error generating contract agreement")
+      (let [contract-id-str (get-in request [:path-params :id])]
+        (-> (response/redirect (str "/contracts/" contract-id-str))
+            (assoc :flash {:type :error :message (str "Error generating contract agreement: " (.getMessage e))}))))))
 
 ;; ============================================================
 ;; Development Helpers

@@ -12,10 +12,18 @@
    - Disbursement: money sent out — loan funding or refund (entity)
    - Deposit: collateral movements (entity)
    - TX metadata: recording facts only (who, when, what operation)
+   - Clearance letter: settlement communicated with legal authority
+   - Statement: account snapshot over a period (informational)
+   - Contract agreement: the agreement document generated for signing
+   - Signing: the act of signing a document
 
    Philosophy: Store facts, derive state. Business events are entities.
    Recording metadata is on the transaction. All derived state (balances,
-   statuses) is computed by querying facts."
+   statuses) is computed by querying facts.
+
+   Documents (clearance-letter, statement, contract-agreement) each get
+   their own namespace — different things with different data and different
+   legal weight. Generation date is txInstant. Document number is derived."
   (:require [datomic.client.api :as d]))
 
 ;; ============================================================
@@ -601,7 +609,171 @@
    {:db/ident       :tx/corrects
     :db/valueType   :db.type/ref
     :db/cardinality :db.cardinality/one
-    :db/doc         "Reference to entity being corrected (e.g., [:payment/id x])"}])
+    :db/doc         "Reference to entity being corrected (e.g., [:payment/id x])"}
+
+   ;; ════════════════════════════════════════════════════════════
+   ;; CLEARANCE LETTER (settlement communicated with legal authority)
+   ;; ════════════════════════════════════════════════════════════
+   ;; Records the act of communicating a settlement amount to a merchant.
+   ;; The settlement-amount is the binding legal commitment — what we told them.
+   ;; The snapshot captures the full calculation breakdown as EDN for forensics.
+   ;; Generation date is txInstant (no separate date attribute — the act happens
+   ;; in the system). Document number is derived from contract external-id + txInstant.
+   ;; Supersession (not retraction) for letters already sent — the original is a fact.
+
+   {:db/ident       :clearance-letter/id
+    :db/valueType   :db.type/uuid
+    :db/unique      :db.unique/identity
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Unique identifier for clearance letter"}
+
+   {:db/ident       :clearance-letter/contract
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reference to contract this clearance letter pertains to"}
+
+   {:db/ident       :clearance-letter/settlement-date
+    :db/valueType   :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Effective date of settlement calculation. Distinct from txInstant
+                     (when the letter was generated). This is the date for which the
+                     settlement was computed — 'as of this date, you owe X.'"}
+
+   {:db/ident       :clearance-letter/penalty-days
+    :db/valueType   :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Penalty days used in settlement calculation.
+                     Input parameter that produced the settlement-amount."}
+
+   {:db/ident       :clearance-letter/settlement-amount
+    :db/valueType   :db.type/bigdec
+    :db/cardinality :db.cardinality/one
+    :db/doc         "THE binding settlement amount communicated (SAR).
+                     First-class attribute for queryability and contradiction detection.
+                     This is the legal commitment — what we told the merchant."}
+
+   {:db/ident       :clearance-letter/snapshot
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc         "EDN string of full calculate-settlement result at generation time.
+                     Forensic record — the complete breakdown (outstanding-principal,
+                     accrued-profit, unearned-profit, fees, penalty, etc.).
+                     Same pattern as :contract/step-up-terms."}
+
+   {:db/ident       :clearance-letter/supersedes
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reference to prior clearance letter this one replaces.
+                     The original was sent — that's a fact. This new letter supersedes it.
+                     Use retraction only for letters never sent (recording error)."}
+
+   ;; ════════════════════════════════════════════════════════════
+   ;; STATEMENT (account snapshot over a period — informational)
+   ;; ════════════════════════════════════════════════════════════
+   ;; Records the act of generating an account statement for a period.
+   ;; Statements are informational, not binding. The snapshot captures
+   ;; contract-state at period-end as EDN.
+
+   {:db/ident       :statement/id
+    :db/valueType   :db.type/uuid
+    :db/unique      :db.unique/identity
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Unique identifier for statement"}
+
+   {:db/ident       :statement/contract
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reference to contract this statement pertains to"}
+
+   {:db/ident       :statement/period-start
+    :db/valueType   :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reporting period start date"}
+
+   {:db/ident       :statement/period-end
+    :db/valueType   :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reporting period end date"}
+
+   {:db/ident       :statement/snapshot
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc         "EDN string of contract-state at period-end.
+                     Full account snapshot — balances, payment allocations, statuses."}
+
+   ;; ════════════════════════════════════════════════════════════
+   ;; CONTRACT AGREEMENT (the agreement document for signing)
+   ;; ════════════════════════════════════════════════════════════
+   ;; Records the act of generating the contract agreement document.
+   ;; The snapshot freezes the contract terms at generation time — principal,
+   ;; schedule, fees, parties, commodity info. This IS the signed agreement,
+   ;; independent of later changes (rate adjustments, corrections).
+
+   {:db/ident       :contract-agreement/id
+    :db/valueType   :db.type/uuid
+    :db/unique      :db.unique/identity
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Unique identifier for contract agreement"}
+
+   {:db/ident       :contract-agreement/contract
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reference to contract this agreement pertains to"}
+
+   {:db/ident       :contract-agreement/snapshot
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc         "EDN string of contract terms at generation time.
+                     Contains: principal, schedule (installments), fees, parties,
+                     commodity info, step-up terms — everything on the paper.
+                     Frozen at generation — immune to later rate adjustments."}
+
+   ;; ════════════════════════════════════════════════════════════
+   ;; SIGNING (the act of signing a document)
+   ;; ════════════════════════════════════════════════════════════
+   ;; Each signing is a separate fact: person X signed document Y on date Z.
+   ;; Multiple signatories = multiple signing entities.
+   ;; "Fully signed" is derived: all :contract/authorized-signatories have signed.
+   ;; "Is this contract signed?" is a derivation, not a stored status.
+   ;; signing/date IS a business date (unlike document generation) because
+   ;; signing happens in the real world and may be recorded later.
+
+   {:db/ident       :signing/id
+    :db/valueType   :db.type/uuid
+    :db/unique      :db.unique/identity
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Unique identifier for signing act"}
+
+   {:db/ident       :signing/document
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reference to document being signed. Polymorphic — can point to
+                     clearance-letter, statement, or contract-agreement entity.
+                     The referenced entity's attributes reveal its type."}
+
+   {:db/ident       :signing/party
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reference to party (person) who signed.
+                     Must be one of the contract's authorized-signatories."}
+
+   {:db/ident       :signing/date
+    :db/valueType   :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Business date — when the signature was obtained.
+                     Distinct from txInstant because signing happens in the real world
+                     and may be recorded later (pen touched paper Monday, entered Tuesday)."}
+
+   {:db/ident       :signing/method
+    :db/valueType   :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Signing method: :wet-ink :digital :otp"}
+
+   {:db/ident       :signing/reference
+    :db/valueType   :db.type/string
+    :db/cardinality :db.cardinality/one
+    :db/doc         "External reference for digital/OTP signing
+                     (certificate ID, OTP session, etc.)"}])
 
 ;; ============================================================
 ;; Connection Management

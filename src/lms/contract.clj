@@ -16,9 +16,13 @@
    the truth as of right now."
   (:require [datomic.client.api :as d]
             [lms.waterfall :as waterfall]
+            [lms.settlement :as settlement]
             [lms.dates :as dates]
             [clojure.edn :as edn]
             [clojure.string :as str]))
+
+;; Forward declarations — document derivations reference functions defined later
+(declare get-contract contract-state)
 
 ;; ============================================================
 ;; Query Functions (Fetch Facts)
@@ -171,7 +175,38 @@
         deposits (get-deposits db contract-id)
         principal-allocations (get-principal-allocations db contract-id)
         admin-events (get-admin-events db contract-id)
-        retracted-payments (get-retracted-payments db contract-id)]
+        retracted-payments (get-retracted-payments db contract-id)
+        ;; Document events — use txInstant as generation date
+        clearance-letters
+        (d/q {:query '[:find ?cl-id ?amount ?tx-time
+                       :in $ ?contract-id
+                       :where
+                       [?cl :clearance-letter/contract ?c]
+                       [?c :contract/id ?contract-id]
+                       [?cl :clearance-letter/id ?cl-id ?tx]
+                       [?cl :clearance-letter/settlement-amount ?amount]
+                       [?tx :db/txInstant ?tx-time]]
+              :args [db contract-id]})
+        statements
+        (d/q {:query '[:find ?s-id ?period-start ?period-end ?tx-time
+                       :in $ ?contract-id
+                       :where
+                       [?s :statement/contract ?c]
+                       [?c :contract/id ?contract-id]
+                       [?s :statement/id ?s-id ?tx]
+                       [?s :statement/period-start ?period-start]
+                       [?s :statement/period-end ?period-end]
+                       [?tx :db/txInstant ?tx-time]]
+              :args [db contract-id]})
+        agreements
+        (d/q {:query '[:find ?ca-id ?tx-time
+                       :in $ ?contract-id
+                       :where
+                       [?ca :contract-agreement/contract ?c]
+                       [?c :contract/id ?contract-id]
+                       [?ca :contract-agreement/id ?ca-id ?tx]
+                       [?tx :db/txInstant ?tx-time]]
+              :args [db contract-id]})]
     (->> (concat
           (map (fn [p] {:event-type :payment
                         :id (:payment/id p)
@@ -209,8 +244,165 @@
                          :author (:retraction/author rp)
                          :note (:retraction/note rp)})
                retracted-payments)
+          (map (fn [[cl-id amount tx-time]]
+                 {:event-type :clearance-letter
+                  :id cl-id
+                  :amount amount
+                  :date tx-time})
+               clearance-letters)
+          (map (fn [[s-id period-start period-end tx-time]]
+                 {:event-type :statement
+                  :id s-id
+                  :date tx-time
+                  :period-start period-start
+                  :period-end period-end})
+               statements)
+          (map (fn [[ca-id tx-time]]
+                 {:event-type :contract-agreement
+                  :id ca-id
+                  :date tx-time})
+               agreements)
           admin-events)
          (sort-by :date))))
+
+;; ============================================================
+;; Document Query Functions (Fetch Facts)
+;; ============================================================
+
+(defn get-clearance-letters
+  "Query all clearance letter entities for a contract.
+
+   Returns sequence sorted by txInstant (generation date).
+   Each map contains all clearance-letter/* attributes."
+  [db contract-id]
+  (->> (d/q {:query '[:find (pull ?cl [*]) ?tx-time
+                      :in $ ?contract-id
+                      :where
+                      [?cl :clearance-letter/contract ?c]
+                      [?c :contract/id ?contract-id]
+                      [?cl :clearance-letter/id _ ?tx]
+                      [?tx :db/txInstant ?tx-time]]
+             :args [db contract-id]})
+       (sort-by second)
+       (mapv first)))
+
+(defn get-statements
+  "Query all statement entities for a contract.
+
+   Returns sequence sorted by period-end."
+  [db contract-id]
+  (->> (d/q {:query '[:find (pull ?s [*])
+                      :in $ ?contract-id
+                      :where
+                      [?s :statement/contract ?c]
+                      [?c :contract/id ?contract-id]]
+             :args [db contract-id]})
+       (map first)
+       (sort-by :statement/period-end)))
+
+(defn get-contract-agreements
+  "Query all contract agreement entities for a contract.
+
+   Returns sequence sorted by txInstant (generation date)."
+  [db contract-id]
+  (->> (d/q {:query '[:find (pull ?ca [*]) ?tx-time
+                      :in $ ?contract-id
+                      :where
+                      [?ca :contract-agreement/contract ?c]
+                      [?c :contract/id ?contract-id]
+                      [?ca :contract-agreement/id _ ?tx]
+                      [?tx :db/txInstant ?tx-time]]
+             :args [db contract-id]})
+       (sort-by second)
+       (mapv (fn [[entity tx-time]] (assoc entity :db/txInstant tx-time)))))
+
+(defn get-signings
+  "Query all signing entities for a document.
+
+   Takes the document's lookup ref (e.g., [:clearance-letter/id uuid]).
+   Returns sequence sorted by :signing/date."
+  [db document-ref]
+  (->> (d/q {:query '[:find (pull ?s [* {:signing/party [:party/id :party/type
+                                                         :party/legal-name
+                                                         :party/national-id]}])
+                      :in $ ?doc
+                      :where
+                      [?s :signing/document ?doc]]
+             :args [db document-ref]})
+       (map first)
+       (sort-by :signing/date)))
+
+(defn get-documents
+  "Get all documents for a contract.
+
+   Convenience function that queries all three document types in one call.
+
+   Returns: {:clearance-letters [...] :statements [...] :contract-agreements [...]}"
+  [db contract-id]
+  {:clearance-letters (get-clearance-letters db contract-id)
+   :statements (get-statements db contract-id)
+   :contract-agreements (get-contract-agreements db contract-id)})
+
+;; ============================================================
+;; Document Derivations
+;; ============================================================
+
+(defn get-active-clearance-letters
+  "Return clearance letters that haven't been superseded.
+
+   A letter is superseded when another letter's :clearance-letter/supersedes
+   points to it. Comparison is by :db/id (entity identity)."
+  [db contract-id]
+  (let [all-letters (get-clearance-letters db contract-id)
+        superseded-eids (->> all-letters
+                             (keep :clearance-letter/supersedes)
+                             (map :db/id)
+                             set)]
+    (remove #(contains? superseded-eids (:db/id %)) all-letters)))
+
+(defn contract-signed?
+  "Derive whether the latest contract agreement is fully signed.
+
+   True when every authorized signatory on the contract has a signing fact
+   for the most recent contract-agreement. No 'signed' flag is stored —
+   this is pure derivation from signing/* and contract/* facts."
+  [db contract-id]
+  (let [agreements (get-contract-agreements db contract-id)]
+    (when (seq agreements)
+      (let [latest (last agreements)
+            signings (get-signings db (:db/id latest))
+            signed-party-ids (set (map #(get-in % [:signing/party :party/id]) signings))
+            contract (get-contract db contract-id)
+            required-ids (set (map :party/id (:contract/authorized-signatories contract)))]
+        (and (seq required-ids)
+             (every? signed-party-ids required-ids))))))
+
+(defn check-clearance-contradictions
+  "Compare committed settlement amounts against current computation.
+
+   For each active (non-superseded) clearance letter, recomputes settlement
+   using the same parameters (settlement-date, penalty-days) and compares
+   the result with the committed settlement-amount.
+
+   Returns vec of contradiction maps, or empty vec if consistent.
+   Each map: {:clearance-letter cl, :committed M, :current M, :difference M}"
+  [db contract-id as-of]
+  (let [active-letters (get-active-clearance-letters db contract-id)
+        state (contract-state db contract-id as-of)]
+    (->> active-letters
+         (keep (fn [cl]
+                 (let [committed (:clearance-letter/settlement-amount cl)
+                       recomputed (settlement/calculate-settlement
+                                   state
+                                   (:clearance-letter/settlement-date cl)
+                                   (:clearance-letter/penalty-days cl))
+                       current (:settlement-amount recomputed)]
+                   (when (not= committed current)
+                     {:clearance-letter cl
+                      :committed committed
+                      :current current
+                      :difference (- current committed)}))))
+         vec)))
 
 (defn get-fees
   "Query all fees for a contract.
@@ -835,7 +1027,10 @@
       :fees enriched-fees
       :installments enriched-installments
       :deposit-held deposit-held
-      :credit-balance credit-balance}
+      :credit-balance credit-balance
+      :documents {:clearance-letters (get-clearance-letters db contract-id)
+                  :statements (get-statements db contract-id)
+                  :contract-agreements (get-contract-agreements db contract-id)}}
      totals)))
 
 ;; ============================================================
@@ -948,9 +1143,19 @@
                                         [?e :disbursement/contract ?c]
                                         [?e :deposit/contract ?c]
                                         [?e :deposit/target-contract ?c]
-                                        [?e :principal-allocation/contract ?c])]
-                           :args [hdb c]}))]
-    (into #{} (map first) (concat contract-eids child-eids))))
+                                        [?e :principal-allocation/contract ?c]
+                                        [?e :clearance-letter/contract ?c]
+                                        [?e :statement/contract ?c]
+                                        [?e :contract-agreement/contract ?c])]
+                           :args [hdb c]}))
+        ;; Signing entities reference documents, not contracts — two-hop join
+        doc-eids (into #{} (map first) child-eids)
+        signing-eids (when (seq doc-eids)
+                       (d/q {:query '[:find ?s
+                                      :in $ [?doc ...]
+                                      :where [?s :signing/document ?doc]]
+                             :args [hdb (vec doc-eids)]}))]
+    (into #{} (map first) (concat contract-eids child-eids signing-eids))))
 
 (defn- entity-type-from-attr
   "Determine entity type keyword from attribute namespace."
@@ -964,6 +1169,10 @@
       "disbursement" :disbursement
       "deposit" :deposit
       "principal-allocation" :principal-allocation
+      "clearance-letter" :clearance-letter
+      "statement" :statement
+      "contract-agreement" :contract-agreement
+      "signing" :signing
       nil)))
 
 (def ^:private internal-attrs
@@ -974,7 +1183,9 @@
   "Attributes that point to parent entities (redundant in contract context)."
   #{:payment/contract :fee/contract :installment/contract
     :disbursement/contract :deposit/contract :deposit/target-contract
-    :principal-allocation/contract :contract/facility})
+    :principal-allocation/contract :contract/facility
+    :clearance-letter/contract :statement/contract
+    :contract-agreement/contract :signing/document})
 
 (defn build-entity-label-cache
   "Build a cache of entity labels by querying the history DB.

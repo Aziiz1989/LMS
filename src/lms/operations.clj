@@ -21,6 +21,7 @@
   (:require [datomic.client.api :as d]
             [lms.contract :as contract]
             [lms.waterfall :as waterfall]
+            [lms.settlement :as settlement]
             [lms.db :as db]
             [lms.dates :as dates]))
 
@@ -134,23 +135,23 @@
 
         ;; Current waterfall
         current-total (contract/compute-waterfall-total
-                        payments disbursements deposits principal-allocations)
+                       payments disbursements deposits principal-allocations)
         before-wf (waterfall/waterfall fees installments current-total)
         before-fees (contract/enrich-fees fees (:allocations before-wf))
         before-insts (contract/enrich-installments
-                       installments (:allocations before-wf) {} now)
+                      installments (:allocations before-wf) {} now)
 
         ;; Waterfall with additional payment — pure function, no d/with needed
         after-wf (waterfall/waterfall fees installments (+ current-total amount))
         after-fees (contract/enrich-fees fees (:allocations after-wf))
         after-insts (contract/enrich-installments
-                      installments (:allocations after-wf) {} now)
+                     installments (:allocations after-wf) {} now)
 
         ;; Compute outstanding from enriched data
         before-outstanding (+ (reduce + 0M (map :outstanding before-fees))
-                             (reduce + 0M (map :outstanding before-insts)))
+                              (reduce + 0M (map :outstanding before-insts)))
         after-outstanding (+ (reduce + 0M (map :outstanding after-fees))
-                            (reduce + 0M (map :outstanding after-insts)))
+                             (reduce + 0M (map :outstanding after-insts)))
 
         ;; Diff fees
         fee-changes
@@ -159,7 +160,7 @@
           {:type :fee
            :id (:id af)
            :description (str (name (:type af)) " fee - "
-                            (if (= :paid (:status af)) "PAID" "partial"))
+                             (if (= :paid (:status af)) "PAID" "partial"))
            :amount (- (:paid af) (:paid bf))})
 
         ;; Diff installments
@@ -174,10 +175,10 @@
            :profit-applied profit-applied
            :principal-applied principal-applied
            :description (str "Installment #" (:seq ai)
-                            (when (pos? profit-applied)
-                              (str " - Profit: " (format "%.2f" (double profit-applied))))
-                            (when (pos? principal-applied)
-                              (str " - Principal: " (format "%.2f" (double principal-applied)))))
+                             (when (pos? profit-applied)
+                               (str " - Profit: " (format "%.2f" (double profit-applied))))
+                             (when (pos? principal-applied)
+                               (str " - Principal: " (format "%.2f" (double principal-applied)))))
            :amount (+ profit-applied principal-applied)})]
 
     {:before {:total-outstanding before-outstanding
@@ -305,24 +306,24 @@
         ;; Build retract statements for all entities
         retract-stmts
         (concat
-          (map (fn [f] [:db/retractEntity [:fee/id (:fee/id f)]]) fees)
-          (map (fn [i] [:db/retractEntity [:installment/id (:installment/id i)]]) installments)
-          (map (fn [p] [:db/retractEntity [:payment/id (:payment/id p)]]) payments)
-          (map (fn [d] [:db/retractEntity [:disbursement/id (:disbursement/id d)]]) disbursements)
-          (map (fn [d] [:db/retractEntity [:deposit/id (:deposit/id d)]]) deposits)
-          (map (fn [pa] [:db/retractEntity [:principal-allocation/id (:principal-allocation/id pa)]])
-               principal-allocations)
+         (map (fn [f] [:db/retractEntity [:fee/id (:fee/id f)]]) fees)
+         (map (fn [i] [:db/retractEntity [:installment/id (:installment/id i)]]) installments)
+         (map (fn [p] [:db/retractEntity [:payment/id (:payment/id p)]]) payments)
+         (map (fn [d] [:db/retractEntity [:disbursement/id (:disbursement/id d)]]) disbursements)
+         (map (fn [d] [:db/retractEntity [:deposit/id (:deposit/id d)]]) deposits)
+         (map (fn [pa] [:db/retractEntity [:principal-allocation/id (:principal-allocation/id pa)]])
+              principal-allocations)
           ;; Retract the contract itself last
-          [[:db/retractEntity contract-ref]])]
+         [[:db/retractEntity contract-ref]])]
 
     (d/transact conn
                 {:tx-data (concat
-                            retract-stmts
-                            [(cond-> {:db/id "datomic.tx"
-                                      :tx/reason reason
-                                      :tx/corrects contract-ref
-                                      :tx/author user-id}
-                               note (assoc :tx/note note))])})))
+                           retract-stmts
+                           [(cond-> {:db/id "datomic.tx"
+                                     :tx/reason reason
+                                     :tx/corrects contract-ref
+                                     :tx/author user-id}
+                              note (assoc :tx/note note))])})))
 
 (defn retract-origination
   "Retract all origination entities for a contract — data correction.
@@ -365,12 +366,12 @@
         ;; Build retract statements
         retract-stmts
         (concat
-          (map (fn [pa] [:db/retractEntity [:principal-allocation/id (:principal-allocation/id pa)]])
-               principal-allocations)
-          (map (fn [d] [:db/retractEntity [:disbursement/id (:disbursement/id d)]])
-               funding-disbursements)
-          (map (fn [d] [:db/retractEntity [:deposit/id (:deposit/id d)]])
-               funding-deposits))]
+         (map (fn [pa] [:db/retractEntity [:principal-allocation/id (:principal-allocation/id pa)]])
+              principal-allocations)
+         (map (fn [d] [:db/retractEntity [:disbursement/id (:disbursement/id d)]])
+              funding-disbursements)
+         (map (fn [d] [:db/retractEntity [:deposit/id (:deposit/id d)]])
+              funding-deposits))]
 
     (when (empty? retract-stmts)
       (throw (ex-info "No origination entities found to retract"
@@ -378,12 +379,12 @@
 
     (d/transact conn
                 {:tx-data (concat
-                            retract-stmts
-                            [(cond-> {:db/id "datomic.tx"
-                                      :tx/reason reason
-                                      :tx/corrects [:contract/id contract-id]
-                                      :tx/author user-id}
-                               note (assoc :tx/note note))])})))
+                           retract-stmts
+                           [(cond-> {:db/id "datomic.tx"
+                                     :tx/reason reason
+                                     :tx/corrects [:contract/id contract-id]
+                                     :tx/author user-id}
+                              note (assoc :tx/note note))])})))
 
 ;; ============================================================
 ;; Rate Adjustment Operations
@@ -405,7 +406,7 @@
    Returns: Profit amount as bigdec"
   [principal-due annual-rate months]
   (with-precision 10 :rounding HALF_UP
-    (* principal-due annual-rate (/ months 12M))))
+                  (* principal-due annual-rate (/ months 12M))))
 
 (defn adjust-rates
   "Apply rate adjustments to installments — one transaction for one business event.
@@ -444,8 +445,8 @@
               inst all-installments
               :when (<= from-seq (:installment/seq inst) to-seq)
               :let [new-profit (calc-profit (:installment/principal-due inst)
-                                           rate
-                                           1)]]  ;; 1 month simplified
+                                            rate
+                                            1)]]  ;; 1 month simplified
           {:db/id [:installment/id (:installment/id inst)]
            :installment/profit-due new-profit})]
 
@@ -1026,6 +1027,207 @@
                          (db/recording-metadata user-id :note note)]}))
 
 ;; ============================================================
+;; Document Operations
+;; ============================================================
+
+(defn generate-clearance-letter
+  "Generate a clearance letter — binding settlement communication.
+
+   Computes settlement internally using contract-state + calculate-settlement,
+   stores the settlement-amount as a first-class bigdec and the full
+   calculation result as an EDN snapshot.
+
+   The committed settlement-amount becomes a fact. If contract state changes
+   later (new payment, correction), this creates a detectable contradiction.
+
+   Args:
+   - conn: Datomic connection
+   - contract-id: UUID of contract
+   - settlement-date: java.util.Date — effective date of settlement
+   - penalty-days: int — days of profit as penalty
+   - user-id: User performing the operation
+   - note: Optional note
+
+   Returns: Transaction result map"
+  [conn contract-id settlement-date penalty-days user-id & {:keys [note]}]
+  (let [db (d/db conn)
+        state (contract/contract-state db contract-id settlement-date)
+        result (settlement/calculate-settlement state settlement-date penalty-days)]
+    (d/transact conn
+                {:tx-data [{:clearance-letter/id (random-uuid)
+                            :clearance-letter/contract [:contract/id contract-id]
+                            :clearance-letter/settlement-date settlement-date
+                            :clearance-letter/penalty-days penalty-days
+                            :clearance-letter/settlement-amount (:settlement-amount result)
+                            :clearance-letter/snapshot (pr-str result)}
+                           (db/recording-metadata user-id :note note)]})))
+
+(defn supersede-clearance-letter
+  "Generate a new clearance letter that supersedes a prior one.
+
+   Same as generate-clearance-letter, plus sets :clearance-letter/supersedes
+   to point to the prior letter. The prior letter remains as a historical
+   fact but is no longer 'active'.
+
+   Args:
+   - conn: Datomic connection
+   - contract-id: UUID of contract
+   - prior-cl-id: UUID of clearance letter being superseded
+   - settlement-date: java.util.Date
+   - penalty-days: int
+   - user-id: User performing the operation
+   - note: Optional note
+
+   Returns: Transaction result map"
+  [conn contract-id prior-cl-id settlement-date penalty-days user-id & {:keys [note]}]
+  (let [db (d/db conn)
+        state (contract/contract-state db contract-id settlement-date)
+        result (settlement/calculate-settlement state settlement-date penalty-days)]
+    (d/transact conn
+                {:tx-data [{:clearance-letter/id (random-uuid)
+                            :clearance-letter/contract [:contract/id contract-id]
+                            :clearance-letter/settlement-date settlement-date
+                            :clearance-letter/penalty-days penalty-days
+                            :clearance-letter/settlement-amount (:settlement-amount result)
+                            :clearance-letter/snapshot (pr-str result)
+                            :clearance-letter/supersedes [:clearance-letter/id prior-cl-id]}
+                           (db/recording-metadata user-id :note note)]})))
+
+(defn generate-statement
+  "Generate a statement — informational account snapshot over a period.
+
+   Computes contract-state at period-end and stores as EDN snapshot.
+   Statements are informational, not binding.
+
+   Args:
+   - conn: Datomic connection
+   - contract-id: UUID of contract
+   - period-start: java.util.Date
+   - period-end: java.util.Date
+   - user-id: User performing the operation
+   - note: Optional note
+
+   Returns: Transaction result map"
+  [conn contract-id period-start period-end user-id & {:keys [note]}]
+  (let [db (d/db conn)
+        state (contract/contract-state db contract-id period-end)]
+    (d/transact conn
+                {:tx-data [{:statement/id (random-uuid)
+                            :statement/contract [:contract/id contract-id]
+                            :statement/period-start period-start
+                            :statement/period-end period-end
+                            :statement/snapshot (pr-str state)}
+                           (db/recording-metadata user-id :note note)]})))
+
+(defn generate-contract-agreement
+  "Generate a contract agreement — document freezing contract terms.
+
+   Snapshots current contract terms (contract entity + schedule + fees +
+   parties + commodity) as EDN. This IS the agreement — the terms as they
+   exist at generation time, frozen.
+
+   Args:
+   - conn: Datomic connection
+   - contract-id: UUID of contract
+   - user-id: User performing the operation
+   - note: Optional note
+
+   Returns: Transaction result map"
+  [conn contract-id user-id & {:keys [note]}]
+  (let [db (d/db conn)
+        contract (contract/get-contract db contract-id)
+        fees (contract/get-fees db contract-id)
+        installments (contract/get-installments db contract-id)
+        snapshot {:contract (dissoc contract :db/id)
+                  :fees (mapv #(dissoc % :db/id) fees)
+                  :installments (mapv #(dissoc % :db/id) installments)}]
+    (d/transact conn
+                {:tx-data [{:contract-agreement/id (random-uuid)
+                            :contract-agreement/contract [:contract/id contract-id]
+                            :contract-agreement/snapshot (pr-str snapshot)}
+                           (db/recording-metadata user-id :note note)]})))
+
+(defn record-signing
+  "Record the act of signing a document.
+
+   Creates a signing/* entity linking a party to a document. The document
+   can be any type (clearance letter, contract agreement, etc.) — Datomic
+   refs are polymorphic.
+
+   Validates no duplicate signing (same party + same document).
+
+   Args:
+   - conn: Datomic connection
+   - document-ref: Lookup ref, e.g. [:clearance-letter/id uuid]
+   - party-id: UUID of the signing party
+   - signing-date: Business date (when signing happened in the real world)
+   - method: Keyword — :wet-ink, :digital, or :otp
+   - user-id: User recording the signing
+   - reference: Optional digital signing reference
+   - note: Optional note
+
+   Returns: Transaction result map"
+  [conn document-ref party-id signing-date method user-id & {:keys [reference note]}]
+  (let [db (d/db conn)
+        existing (d/q {:query '[:find ?s
+                                :in $ ?doc ?party
+                                :where
+                                [?s :signing/document ?doc]
+                                [?s :signing/party ?party]]
+                       :args [db document-ref [:party/id party-id]]})]
+    (when (seq existing)
+      (throw (ex-info "Duplicate signing: party has already signed this document"
+                      {:document-ref document-ref
+                       :party-id party-id
+                       :error :duplicate-signing})))
+    (d/transact conn
+                {:tx-data [(cond-> {:signing/id (random-uuid)
+                                    :signing/document document-ref
+                                    :signing/party [:party/id party-id]
+                                    :signing/date signing-date
+                                    :signing/method method}
+                             reference (assoc :signing/reference reference))
+                           (db/recording-metadata user-id :note note)]})))
+
+(defn retract-document
+  "Retract a document entity and associated signings — for unsent documents.
+
+   Atomically retracts the document + all signing/* entities pointing to it.
+   Use for documents generated in error and never sent.
+
+   Do NOT use for documents already communicated — use supersession instead.
+
+   Args:
+   - conn: Datomic connection
+   - ns-kw: Namespace keyword, e.g. :clearance-letter, :statement, :contract-agreement
+   - document-id: UUID of the document
+   - reason: Keyword — :correction, :duplicate-removal, or :erroneous-entry
+   - user-id: User performing the retraction
+   - note: Optional note
+
+   Returns: Transaction result map"
+  [conn ns-kw document-id reason user-id & {:keys [note]}]
+  (let [db (d/db conn)
+        lookup-ref [(keyword (name ns-kw) "id") document-id]
+        doc-eid (:db/id (d/pull db [:db/id] lookup-ref))
+        _ (when-not doc-eid
+            (throw (ex-info "Document not found"
+                            {:ns ns-kw :document-id document-id :error :not-found})))
+        signing-eids (d/q {:query '[:find ?s
+                                    :in $ ?doc
+                                    :where [?s :signing/document ?doc]]
+                           :args [db doc-eid]})]
+    (d/transact conn
+                {:tx-data (concat
+                           (map (fn [[eid]] [:db/retractEntity eid]) signing-eids)
+                           [[:db/retractEntity lookup-ref]
+                            (cond-> {:db/id "datomic.tx"
+                                     :tx/reason reason
+                                     :tx/corrects lookup-ref
+                                     :tx/author user-id}
+                              note (assoc :tx/note note))])})))
+
+;; ============================================================
 ;; Development Examples
 ;; ============================================================
 
@@ -1120,5 +1322,4 @@
   ;; Retract a payment (data correction — recording error)
   ;; (ops/retract-payment conn payment-uuid :duplicate-removal "test-user"
   ;;                      :note "Duplicate of FT-ANB-123")
-
   )

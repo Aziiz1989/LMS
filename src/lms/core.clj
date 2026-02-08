@@ -109,7 +109,11 @@
       ["/guarantors" {:post handlers/add-guarantor-handler}]
       ["/guarantors/:party-id/remove" {:post handlers/remove-guarantor-handler}]
       ["/signatories" {:post handlers/add-signatory-handler}]
-      ["/signatories/:party-id/remove" {:post handlers/remove-signatory-handler}]]]
+      ["/signatories/:party-id/remove" {:post handlers/remove-signatory-handler}]
+      ["/generate-clearance-letter" {:post handlers/generate-clearance-letter-handler}]
+      ["/generate-statement" {:post handlers/generate-statement-handler}]
+      ["/generate-contract-agreement" {:post handlers/generate-contract-agreement-handler}]
+      ["/documents/:type/:doc-id/download" {:get handlers/download-document-pdf-handler}]]]
     ["/parties"
      ["" {:get handlers/list-parties-handler
           :post handlers/create-party-handler}]

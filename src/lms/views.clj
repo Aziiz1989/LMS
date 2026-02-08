@@ -860,7 +860,7 @@
    [:body
     [:div.header
      [:div.container
-      [:h1 "LMS - Loan Management System - I am Aziz"]
+      [:h1 "LMS - Loan Management System"]
       [:nav.nav
        [:a {:href "/contracts"} "Contracts"]
        [:a {:href "/parties"} "Parties"]
@@ -1859,6 +1859,148 @@ updateOrigDisbursement();
         :style "background-color: #f59e0b; color: white;"}
        "Retract Origination"]]]]])
 
+(defn generate-clearance-letter-modal
+  "Modal form for generating a clearance letter."
+  [contract-id]
+  [:div#generate-clearance-letter-modal.modal
+   [:div.modal-content
+    [:div.modal-header
+     [:h3 "Generate Clearance Letter"]
+     [:button.modal-close {:onclick "document.getElementById('generate-clearance-letter-modal').classList.remove('active')"} "×"]]
+    [:form {:method "post" :action (str "/contracts/" contract-id "/generate-clearance-letter")}
+     [:div.form-group
+      [:label "Settlement Date"]
+      [:input {:type "date" :name "settlement-date" :required true}]]
+     [:div.form-group
+      [:label "Penalty Days"]
+      [:input {:type "number" :name "penalty-days" :min "0" :value "0" :required true}]]
+     [:div {:style "display: flex; gap: 0.5rem; justify-content: flex-end;"}
+      [:button.btn.btn-secondary
+       {:type "button"
+        :onclick "document.getElementById('generate-clearance-letter-modal').classList.remove('active')"}
+       "Cancel"]
+      [:button.btn.btn-primary {:type "submit"} "Generate"]]]]])
+
+(defn generate-statement-modal
+  "Modal form for generating a statement."
+  [contract-id]
+  [:div#generate-statement-modal.modal
+   [:div.modal-content
+    [:div.modal-header
+     [:h3 "Generate Statement"]
+     [:button.modal-close {:onclick "document.getElementById('generate-statement-modal').classList.remove('active')"} "×"]]
+    [:form {:method "post" :action (str "/contracts/" contract-id "/generate-statement")}
+     [:div.form-group
+      [:label "Period Start"]
+      [:input {:type "date" :name "period-start" :required true}]]
+     [:div.form-group
+      [:label "Period End"]
+      [:input {:type "date" :name "period-end" :required true}]]
+     [:div {:style "display: flex; gap: 0.5rem; justify-content: flex-end;"}
+      [:button.btn.btn-secondary
+       {:type "button"
+        :onclick "document.getElementById('generate-statement-modal').classList.remove('active')"}
+       "Cancel"]
+      [:button.btn.btn-primary {:type "submit"} "Generate"]]]]])
+
+(defn document-list-section
+  "Display all documents for a contract with download buttons."
+  [contract-id documents]
+  [:div {:style "padding: 1rem;"}
+   [:h3 "Documents"]
+
+   ;; Action buttons for generating documents
+   [:div {:style "margin-bottom: 1.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;"}
+    [:button.btn.btn-primary
+     {:type "button"
+      :onclick "document.getElementById('generate-clearance-letter-modal').classList.add('active')"}
+     "+ Generate Clearance Letter"]
+    [:button.btn.btn-primary
+     {:type "button"
+      :onclick "document.getElementById('generate-statement-modal').classList.add('active')"}
+     "+ Generate Statement"]
+    [:form {:method "post" :action (str "/contracts/" contract-id "/generate-contract-agreement")
+            :style "display: inline;"}
+     [:button.btn.btn-primary {:type "submit"} "+ Generate Contract Agreement"]]]
+
+   ;; Clearance Letters
+   (when (seq (:clearance-letters documents))
+     [:div {:style "margin-bottom: 2rem;"}
+      [:h4 "Clearance Letters"]
+      [:table.table
+       [:thead
+        [:tr
+         [:th "Settlement Date"]
+         [:th "Amount (SAR)"]
+         [:th "Penalty Days"]
+         [:th "Actions"]]]
+       [:tbody
+        (for [cl (:clearance-letters documents)]
+          [:tr
+           [:td (format-date (:clearance-letter/settlement-date cl))]
+           [:td (format-money (:clearance-letter/settlement-amount cl))]
+           [:td (:clearance-letter/penalty-days cl)]
+           [:td
+            [:a.btn.btn-sm
+             {:href (str "/contracts/" contract-id "/documents/clearance-letter/"
+                        (:clearance-letter/id cl) "/download")
+              :style "background-color: #10b981; color: white;"
+              :download ""}
+             "⬇ Download PDF"]]])]]])
+
+   ;; Statements
+   (when (seq (:statements documents))
+     [:div {:style "margin-bottom: 2rem;"}
+      [:h4 "Statements"]
+      [:table.table
+       [:thead
+        [:tr
+         [:th "Period Start"]
+         [:th "Period End"]
+         [:th "Actions"]]]
+       [:tbody
+        (for [stmt (:statements documents)]
+          [:tr
+           [:td (format-date (:statement/period-start stmt))]
+           [:td (format-date (:statement/period-end stmt))]
+           [:td
+            [:a.btn.btn-sm
+             {:href (str "/contracts/" contract-id "/documents/statement/"
+                        (:statement/id stmt) "/download")
+              :style "background-color: #10b981; color: white;"
+              :download ""}
+             "⬇ Download PDF"]]])]]])
+
+   ;; Contract Agreements
+   (when (seq (:contract-agreements documents))
+     [:div {:style "margin-bottom: 2rem;"}
+      [:h4 "Contract Agreements"]
+      [:table.table
+       [:thead
+        [:tr
+         [:th "Generated Date"]
+         [:th "Actions"]]]
+       [:tbody
+        (for [ca (:contract-agreements documents)]
+          (let [generated-date (:db/txInstant ca)]
+            [:tr
+             [:td (format-date generated-date)]
+             [:td
+              [:a.btn.btn-sm
+               {:href (str "/contracts/" contract-id "/documents/contract-agreement/"
+                          (:contract-agreement/id ca) "/download")
+                :style "background-color: #10b981; color: white;"
+                :download ""}
+               "⬇ Download PDF"]]]))]]])
+
+   ;; No documents message
+   (when (and (empty? (:clearance-letters documents))
+              (empty? (:statements documents))
+              (empty? (:contract-agreements documents)))
+     [:div {:style "text-align: center; padding: 2rem; color: #6b7280;"}
+      "No documents have been generated for this contract yet."])])
+
+
 (defn contract-detail-page
   "Render contract detail page.
 
@@ -1908,7 +2050,8 @@ updateOrigDisbursement();
                  :hx-get (str "/contracts/" contract-id "/history-tab")
                  :hx-target "#tab-history"
                  :hx-trigger "click once"
-                 :hx-swap "innerHTML"} "History"]]
+                 :hx-swap "innerHTML"} "History"]
+        [:a.tab {:href "#" :data-tab "documents" :onclick "switchTab(event, 'documents')"} "Documents"]]
        ;; Tab content panels
        [:div#tab-overview.tab-content.active
         (contract-summary state)
@@ -1918,6 +2061,8 @@ updateOrigDisbursement();
        [:div#tab-history.tab-content
         [:div {:style "text-align: center; padding: 2rem; color: #6b7280;"}
          "Click the History tab to load transaction history..."]]
+       [:div#tab-documents.tab-content
+        (document-list-section contract-id (:documents state))]
        ;; Modals (outside tabs)
        (payment-form contract-id)
        (retract-payment-modal contract-id)
@@ -1925,6 +2070,8 @@ updateOrigDisbursement();
        (settlement-form contract-id)
        (origination-form contract-id state)
        (retract-origination-modal contract-id)
+       (generate-clearance-letter-modal contract-id)
+       (generate-statement-modal contract-id)
        ;; JavaScript for tabs and modal handling
        [:script "
          function switchTab(event, tabName) {
