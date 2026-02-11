@@ -254,6 +254,9 @@
        [:small "Deposit Held"] [:br]
        [:strong.mono (format-money (:deposit-held state))]]
       [:article
+       [:small "Deposit Allocated"] [:br]
+       [:strong.mono (format-money (:deposit-allocated state))]]
+      [:article
        [:small "Disbursed"] [:br]
        [:strong (or (format-date (:disbursed-at contract)) "Pending")]]
       [:article
@@ -446,6 +449,8 @@
     :fee "Fee"
     :deposit "Deposit"
     :disbursement "Disbursement"
+    :inflow "Inflow"
+    :outflow "Outflow"
     :contract "Contract"
     :principal-allocation "Principal Allocation"
     (some-> entity-type name str/capitalize)))
@@ -562,6 +567,8 @@
        [:option {:value "fee" :selected (= entity-types #{:fee})} "Fees"]
        [:option {:value "disbursement" :selected (= entity-types #{:disbursement})} "Disbursements"]
        [:option {:value "deposit" :selected (= entity-types #{:deposit})} "Deposits"]
+       [:option {:value "inflow" :selected (= entity-types #{:inflow})} "Inflows"]
+       [:option {:value "outflow" :selected (= entity-types #{:outflow})} "Outflows"]
        [:option {:value "contract" :selected (= entity-types #{:contract})} "Contract"]]]
      [:label "\u00a0"
       [:button.secondary
@@ -812,7 +819,8 @@
        [:li "All payments"]
        [:li "All disbursements"]
        [:li "All deposits"]
-       [:li "All principal allocations"]]]
+       [:li "All inflows"]
+       [:li "All outflows"]]]
      [:p [:small "Use this only for data corrections (contract boarded in error, duplicate, wrong customer). "
           "Datomic history preserves retracted data for audit purposes."]]
      [:label {:for "retract-contract-reason"} "Reason for Correction *"
@@ -891,11 +899,12 @@
     [:div#settlement-result-area]]])
 
 (defn origination-form
-  "Render origination modal with unified principal deduction selection.
+  "Render origination modal.
 
-   Shows each fee individually with checkboxes, deposit option, and
-   installment prepayment field. The user selects what to deduct from
-   principal — the disbursement amount updates accordingly.
+   The new model: the user specifies disbursement to borrower + optional
+   deposit from funding. Fee settlement, deposit funding, and installment
+   prepayment are NOT explicit steps — the waterfall derives these from
+   available = principal - outflows.
 
    Args:
    - contract-id: UUID of contract
@@ -906,167 +915,100 @@
   (let [contract (:contract state)
         principal (or (:principal contract) 0M)
         security-deposit (or (:security-deposit-required contract) 0M)
-        fees (->> (:fees state)
-                  (filter #(= :unpaid (:status %))))
         deposit-held (or (:deposit-held state) 0M)
         deposit-needed (max 0M (- security-deposit deposit-held))
-        credit-balance (or (:credit-balance state) 0M)
-        excess-return (if (pos? credit-balance) credit-balance 0M)
         disb-iban (:disbursement-iban contract)
         disb-bank (:disbursement-bank contract)
-        fmt-val (fn [n] (format "%.2f" (double n)))
-        fmt-date (fn [d] (when d (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") d)))
-        ;; Pre-calculate initial deductions (fees due on/before today + deposit)
-        today (java.util.Date.)
-        initial-fee-total (->> fees
-                               (filter #(not (.after ^java.util.Date (:due-date %) today)))
-                               (map :amount)
-                               (reduce + 0M))
-        initial-deductions (+ initial-fee-total deposit-needed)
-        initial-disbursement (max 0M (- principal initial-deductions))]
-    (let [;; Build signals map for all checkboxes
-          indexed-fees (map-indexed vector fees)
-          fee-signals (str/join ", "
-                                (for [[i {:keys [due-date]}] indexed-fees
-                                      :let [due-today? (not (.after ^java.util.Date due-date today))]]
-                                  (str "origFee" i ": " (if due-today? "true" "false"))))
-          deposit-signal (when (pos? deposit-needed) "origDeposit: true")
-          all-signals (str/join ", " (remove str/blank? [fee-signals
-                                                         deposit-signal
-                                                         "origPrepayment: 0"]))
-          ;; Build the disbursement effect expression
-          fee-sum-expr (str/join ""
-                                 (for [[i {:keys [amount]}] indexed-fees]
-                                   (str "if($origFee" i ") t+=" (fmt-val amount) ";")))
-          deposit-expr (when (pos? deposit-needed)
-                         (str "if($origDeposit) t+=" (fmt-val deposit-needed) ";"))
-          effect-expr (str "var t=0;"
-                           fee-sum-expr
-                           (or deposit-expr "")
-                           "t+=parseFloat($origPrepayment)||0;"
-                           "var d=Math.max(0," (fmt-val principal) "-t).toFixed(2);"
-                           "document.getElementById('orig-disbursement-display').textContent='SAR '+Number(d).toLocaleString('en',{minimumFractionDigits:2});"
-                           "document.getElementById('orig-disbursement-value').value=d;")]
-      [:dialog#origination-modal {:data-attr "{'open': $showOriginationModal}"
-                                  :data-signals (str "{" all-signals "}")}
-       [:article
-        [:header [:h3 "Originate Contract"]]
-        [:p [:small "Select deductions from principal. Disbursement updates automatically."]]
+        fmt-val (fn [n] (format "%.2f" (double n)))]
+    [:dialog#origination-modal {:data-attr "{'open': $showOriginationModal}"}
+     [:article
+      [:header [:h3 "Originate Contract"]]
+      [:p [:small "Enter disbursement details. Fee settlement, deposit, and prepayment "
+           "are automatically derived by the waterfall from available funds."]]
 
-        [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/originate', {contentType: 'form'})")}
+      [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/originate', {contentType: 'form'})")}
 
-         ;; Principal display
-         [:table
-          [:tbody
-           [:tr [:td "Principal"] [:td.text-right [:strong (str "SAR " (format-money principal))]]]]]
+       ;; Principal display
+       [:table
+        [:tbody
+         [:tr [:td "Principal"] [:td.text-right [:strong (str "SAR " (format-money principal))]]]
+         (when (pos? deposit-needed)
+           [:tr [:td "Deposit from Funding"] [:td.text-right (str "SAR " (format-money deposit-needed))]])]]
 
-         ;; Deductions from principal
-         [:fieldset
-          [:legend "Deductions from Principal"]
+       ;; Disbursement amount
+       [:label {:for "orig-disbursement"} "Borrower Disbursement Amount (SAR) *"
+        [:input {:type "number"
+                 :id "orig-disbursement"
+                 :name "disbursement-amount"
+                 :step "0.01"
+                 :min "0.01"
+                 :required true
+                 :placeholder "Amount wired to borrower"}]]
 
-          ;; Per-fee checkboxes
-          (when (seq fees)
-            (for [[i {:keys [id type amount due-date]}] indexed-fees
-                  :let [signal-name (str "origFee" i)
-                        checkbox-id (str "fee-" id)]]
-              [:label {:for checkbox-id
-                       :key (str id)
-                       :style "display: flex; justify-content: space-between; cursor: pointer;"}
-               [:span
-                [:input {:type "checkbox"
-                         :id checkbox-id
-                         :data-bind (keyword signal-name)}]
-                [:input {:type "hidden"
-                         :name "settle-fee-id[]" :value (str id)
-                         :data-attr (str "{'disabled': !$" signal-name "}")}]
-                [:input {:type "hidden"
-                         :name "settle-fee-amount[]" :value (fmt-val amount)
-                         :data-attr (str "{'disabled': !$" signal-name "}")}]
-                (str "Fee: " (name type)
-                     (when due-date (str " (due " (fmt-date due-date) ")")))]
-               [:span [:strong (str "SAR " (format-money amount))]]]))
+       ;; Deposit from funding
+       (when (pos? deposit-needed)
+         [:div
+          [:label
+           [:input {:type "checkbox"
+                    :name "include-deposit"
+                    :value "true"
+                    :checked true}]
+           (str " Deduct deposit from funding (SAR " (format-money deposit-needed) ")")]
+          [:input {:type "hidden" :name "deposit-from-funding"
+                   :value (fmt-val deposit-needed)}]])
 
-          ;; Deposit checkbox
-          (when (pos? deposit-needed)
-            [:label {:for "orig-deposit-checkbox"
-                     :style "display: flex; justify-content: space-between; cursor: pointer;"}
-             [:span
-              [:input {:type "checkbox"
-                       :id "orig-deposit-checkbox"
-                       "data-bind:orig-deposit" true}]
-              [:input {:type "hidden" :name "deposit-from-funding"
-                       :value (fmt-val deposit-needed)
-                       :data-attr "{'disabled': !$origDeposit}"}]
-              "Security Deposit"]
-             [:span [:strong (str "SAR " (format-money deposit-needed))]]])
+       ;; Refund amount (optional)
+       [:label {:for "orig-refund"} "Refund Amount (SAR)"
+        [:input {:type "number"
+                 :id "orig-refund"
+                 :name "refund-amount"
+                 :step "0.01"
+                 :min "0"
+                 :placeholder "Excess to return to customer (optional)"}]]
 
-          ;; Installment prepayment
-          [:label {:for "orig-inst-prepayment"
-                   :style "display: flex; justify-content: space-between; align-items: center;"}
-           "Installment prepayment"
-           [:input {:type "number"
-                    :id "orig-inst-prepayment"
-                    :name "installment-prepayment"
-                    :step "0.01" :min "0"
-                    :placeholder "0.00"
-                    :style "width: 10rem; text-align: right;"
-                    "data-bind:orig-prepayment" true}]]]
+       [:hr]
 
-         ;; Summary with data-effect for reactive calculation
-         [:table {:style "margin-top: 0.75rem;"}
-          [:div {:data-effect effect-expr}]
-          [:tfoot
-           [:tr [:th "Merchant Disbursement"]
-            [:th.text-right {:id "orig-disbursement-display"} (str "SAR " (format-money initial-disbursement))]]
-           [:input {:type "hidden" :name "disbursement-amount" :id "orig-disbursement-value"
-                    :value (fmt-val initial-disbursement)}]
-           (when (pos? excess-return)
-             [:tr [:td "Plus: Excess return to customer"]
-              [:td.text-right (str "SAR " (format-money excess-return))]])
-           (when (pos? excess-return)
-             [:input {:type "hidden" :name "excess-return" :value (fmt-val excess-return)}])]]
+       ;; Date, reference, IBAN, bank
+       [:label {:for "orig-date"} "Origination Date *"
+        [:input {:type "date"
+                 :id "orig-date"
+                 :name "date"
+                 :required true
+                 :value (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") (java.util.Date.))}]]
+       [:label {:for "orig-disb-reference"} "Wire Reference *"
+        [:input {:type "text"
+                 :id "orig-disb-reference"
+                 :name "disbursement-reference"
+                 :required true
+                 :placeholder "e.g., WT-001"}]]
+       [:div.grid
+        [:label {:for "orig-disb-iban"} "Destination IBAN"
+         [:input {:type "text"
+                  :id "orig-disb-iban"
+                  :name "disbursement-iban"
+                  :value (or disb-iban "")
+                  :placeholder "e.g., SA242000..."}]]
+        [:label {:for "orig-disb-bank"} "Destination Bank"
+         [:input {:type "text"
+                  :id "orig-disb-bank"
+                  :name "disbursement-bank"
+                  :value (or disb-bank "")
+                  :placeholder "e.g., ANB"}]]]
 
-         ;; User inputs (date, reference, IBAN, bank)
-         [:hr]
-         [:label {:for "orig-date"} "Origination Date *"
-          [:input {:type "date"
-                   :id "orig-date"
-                   :name "date"
-                   :required true
-                   :value (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") (java.util.Date.))}]]
-         [:label {:for "orig-disb-reference"} "Wire Reference *"
-          [:input {:type "text"
-                   :id "orig-disb-reference"
-                   :name "disbursement-reference"
-                   :required true
-                   :placeholder "e.g., WT-001"}]]
-         [:div.grid
-          [:label {:for "orig-disb-iban"} "Destination IBAN"
-           [:input {:type "text"
-                    :id "orig-disb-iban"
-                    :name "disbursement-iban"
-                    :value (or disb-iban "")
-                    :placeholder "e.g., SA242000..."}]]
-          [:label {:for "orig-disb-bank"} "Destination Bank"
-           [:input {:type "text"
-                    :id "orig-disb-bank"
-                    :name "disbursement-bank"
-                    :value (or disb-bank "")
-                    :placeholder "e.g., ANB"}]]]
+       [:footer
+        [:button.secondary
+         {:type "button"
+          "data-on:click" "$showOriginationModal = false"}
+         "Cancel"]
+        [:button
+         {:type "submit"}
+         "Originate"]]]]]))
 
-         [:footer
-          [:button.secondary
-           {:type "button"
-            "data-on:click" "$showOriginationModal = false"}
-           "Cancel"]
-          [:button
-           {:type "submit"}
-           "Originate"]]]]])))
 (defn retract-origination-modal
   "Render modal for retracting origination entities (data correction).
 
-   Retracts all origination-created entities: principal allocations,
-   funding disbursements, deposits from funding, and excess returns.
+   Each origination step is retracted independently via individual
+   operations. This modal provides a UI for selecting what to retract.
    Datomic history preserves all retracted datoms for audit.
 
    Args:
@@ -1081,10 +1023,12 @@
      [:div.flash-caution
       [:p [:strong "This will retract all origination entities:"]]
       [:ul
-       [:li "Principal allocations (fee deductions from funding)"]
-       [:li "Funding disbursements"]
+       [:li "Funding inflow (principal entering waterfall)"]
+       [:li "Borrower disbursement (with outflow)"]
        [:li "Deposits from funding"]
-       [:li "Excess return disbursements"]]]
+       [:li "Settlement outflow + inflow (if refinancing)"]
+       [:li "Refund disbursement (if excess returned)"]
+       [:li "Disbursed-at date (reverts status to pending)"]]]
      [:p [:small "Use this only for data corrections (wrong amounts, duplicate origination). "
           "Datomic history preserves retracted data for audit purposes."]]
      [:label {:for "retract-orig-reason"} "Reason for Correction *"
@@ -1099,7 +1043,7 @@
       [:textarea {:id "retract-orig-note"
                   :name "note"
                   :rows "2"
-                  :placeholder "e.g., Wrong fee deduction amount, re-originating"}]]
+                  :placeholder "e.g., Wrong disbursement amount, re-originating"}]]
      [:footer
       [:button.secondary
        {:type "button"

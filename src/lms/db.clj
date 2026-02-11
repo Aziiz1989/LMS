@@ -11,6 +11,8 @@
    - Payment: money received from customer (entity)
    - Disbursement: money sent out — loan funding or refund (entity)
    - Deposit: collateral movements (entity)
+   - Inflow: money entering a contract's waterfall (component of payment, or independent)
+   - Outflow: money leaving a contract (component of disbursement, or independent)
    - TX metadata: recording facts only (who, when, what operation)
    - Clearance letter: settlement communicated with legal authority
    - Statement: account snapshot over a period (informational)
@@ -408,7 +410,7 @@
    ;; DISBURSEMENT (money OUT — business entity)
    ;; ════════════════════════════════════════════════════════════
    ;; Money sent out. Type distinguishes purpose:
-   ;;   :funding — loan disbursement to customer/merchant
+   ;;   :funding — loan disbursement to borrower
    ;;   :refund  — money returned to customer
    ;; Refund disbursements reduce effective payments in the waterfall.
    ;; Always positive amounts. Errors are retracted.
@@ -423,7 +425,7 @@
     :db/valueType   :db.type/keyword
     :db/cardinality :db.cardinality/one
     :db/doc         "Disbursement type:
-                     :funding       — loan disbursement to merchant (from principal)
+                     :funding       — loan disbursement to borrower (from principal)
                      :refund        — money returned to customer (reduces waterfall)
                      :excess-return — application excess returned (does NOT affect waterfall)"}
 
@@ -565,6 +567,111 @@
     :db/doc         "Fee entity settled by this allocation (for :fee-settlement type)."}
 
    ;; ════════════════════════════════════════════════════════════
+   ;; INFLOW (money entering contract waterfall)
+   ;; ════════════════════════════════════════════════════════════
+   ;; An inflow records money entering a contract's waterfall.
+   ;; Sources:
+   ;;   :funding    — principal disbursed at origination
+   ;;   :customer   — customer payment received
+   ;;   :deposit    — deposit offset applied to balance
+   ;;   :settlement — money from another contract (refi)
+   ;; Inflows on payments/disbursements use component refs (cascade retract).
+   ;; Always positive amounts. Errors are retracted.
+
+   {:db/ident       :inflow/id
+    :db/valueType   :db.type/uuid
+    :db/unique      :db.unique/identity
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Unique identifier for inflow"}
+
+   {:db/ident       :inflow/amount
+    :db/valueType   :db.type/bigdec
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Inflow amount (SAR). Always positive."}
+
+   {:db/ident       :inflow/effective-date
+    :db/valueType   :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Business date — when money entered the contract waterfall."}
+
+   {:db/ident       :inflow/contract
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reference to contract this inflow belongs to."}
+
+   {:db/ident       :inflow/source
+    :db/valueType   :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Source of inflow: :funding :customer :deposit :settlement"}
+
+   {:db/ident       :inflow/source-contract
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Source contract for settlement inflows (refi).
+                     Only present when source = :settlement."}
+
+   ;; Component ref on payment — inflows cascade with payment retraction
+   {:db/ident       :payment/inflows
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/many
+    :db/isComponent true
+    :db/doc         "Component inflows created by this payment.
+                     Cascade retracts with the payment entity."}
+
+   ;; ════════════════════════════════════════════════════════════
+   ;; OUTFLOW (money leaving the contract)
+   ;; ════════════════════════════════════════════════════════════
+   ;; An outflow records money genuinely leaving the contract.
+   ;; Types:
+   ;;   :borrower   — disbursement to borrower at origination
+   ;;   :settlement — money to another contract (refi)
+   ;;   :refund     — money returned to customer (origination excess or overpayment)
+   ;; Fee settlement, deposit collection, and prepayment are NOT outflows —
+   ;; they are waterfall-derived allocations within the contract.
+   ;; Outflows on disbursements use component refs (cascade retract).
+   ;; Always positive amounts. Errors are retracted.
+
+   {:db/ident       :outflow/id
+    :db/valueType   :db.type/uuid
+    :db/unique      :db.unique/identity
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Unique identifier for outflow"}
+
+   {:db/ident       :outflow/amount
+    :db/valueType   :db.type/bigdec
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Outflow amount (SAR). Always positive."}
+
+   {:db/ident       :outflow/effective-date
+    :db/valueType   :db.type/instant
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Business date — when money left the contract."}
+
+   {:db/ident       :outflow/contract
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Reference to contract this outflow belongs to."}
+
+   {:db/ident       :outflow/type
+    :db/valueType   :db.type/keyword
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Outflow type: :borrower :settlement :refund"}
+
+   {:db/ident       :outflow/target-contract
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Target contract for settlement outflows (refi).
+                     Only present when type = :settlement."}
+
+   ;; Component ref on disbursement — outflows cascade with disbursement retraction
+   {:db/ident       :disbursement/outflows
+    :db/valueType   :db.type/ref
+    :db/cardinality :db.cardinality/many
+    :db/isComponent true
+    :db/doc         "Component outflows created by this disbursement.
+                     Cascade retracts with the disbursement entity."}
+
+   ;; ════════════════════════════════════════════════════════════
    ;; TRANSACTION METADATA (recording facts — on Datomic tx entity)
    ;; ════════════════════════════════════════════════════════════
    ;; These attributes describe WHO recorded WHAT and WHY.
@@ -619,7 +726,7 @@
    ;; ════════════════════════════════════════════════════════════
    ;; CLEARANCE LETTER (settlement communicated with legal authority)
    ;; ════════════════════════════════════════════════════════════
-   ;; Records the act of communicating a settlement amount to a merchant.
+   ;; Records the act of communicating a settlement amount to a borrower.
    ;; The settlement-amount is the binding legal commitment — what we told them.
    ;; The snapshot captures the full calculation breakdown as EDN for forensics.
    ;; Generation date is txInstant (no separate date attribute — the act happens

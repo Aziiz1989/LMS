@@ -82,13 +82,10 @@
        (sort-by :deposit/date)))
 
 (defn get-principal-allocations
-  "Query all principal allocation entities for a contract.
+  "Query all principal-allocation entities for a contract.
 
-   Returns sequence of principal-allocation entity maps, sorted by business date.
-   Each map contains: :principal-allocation/id, :principal-allocation/amount,
-   :principal-allocation/date, :principal-allocation/contract,
-   :principal-allocation/type (optional), :principal-allocation/fee (optional ref),
-   :principal-allocation/reference (optional)"
+   DEPRECATED: Replaced by inflow/outflow model. Kept for reading
+   historical data from contracts created before the migration."
   [db contract-id]
   (->> (d/q {:query '[:find (pull ?pa [* {:principal-allocation/fee [:fee/id]}])
                       :in $ ?contract-id
@@ -98,6 +95,39 @@
              :args [db contract-id]})
        (map first)
        (sort-by :principal-allocation/date)))
+
+(defn get-inflows
+  "Query all inflow entities for a contract.
+
+   Returns sequence of inflow entity maps, sorted by effective-date.
+   Each map contains: :inflow/id, :inflow/amount, :inflow/effective-date,
+   :inflow/source, :inflow/source-contract (optional)"
+  [db contract-id]
+  (->> (d/q {:query '[:find (pull ?i [* {:inflow/source-contract [:contract/id]}])
+                      :in $ ?contract-id
+                      :where
+                      [?i :inflow/contract ?c]
+                      [?c :contract/id ?contract-id]]
+             :args [db contract-id]})
+       (map first)
+       (sort-by :inflow/effective-date)))
+
+(defn get-outflows
+  "Query all outflow entities for a contract.
+
+   Returns sequence of outflow entity maps, sorted by effective-date.
+   Each map contains: :outflow/id, :outflow/amount, :outflow/effective-date,
+   :outflow/type (:borrower, :settlement, :refund),
+   :outflow/target-contract (optional)"
+  [db contract-id]
+  (->> (d/q {:query '[:find (pull ?o [* {:outflow/target-contract [:contract/id]}])
+                      :in $ ?contract-id
+                      :where
+                      [?o :outflow/contract ?c]
+                      [?c :contract/id ?contract-id]]
+             :args [db contract-id]})
+       (map first)
+       (sort-by :outflow/effective-date)))
 
 (defn get-admin-events
   "Query admin events (boarding, rate-adjustment) for a contract.
@@ -173,7 +203,8 @@
   (let [payments (get-payments db contract-id)
         disbursements (get-disbursements db contract-id)
         deposits (get-deposits db contract-id)
-        principal-allocations (get-principal-allocations db contract-id)
+        inflows (get-inflows db contract-id)
+        outflows (get-outflows db contract-id)
         admin-events (get-admin-events db contract-id)
         retracted-payments (get-retracted-payments db contract-id)
         ;; Document events — use txInstant as generation date
@@ -229,12 +260,18 @@
                         :date (:deposit/date d)
                         :reference (:deposit/reference d)})
                deposits)
-          (map (fn [pa] {:event-type :principal-allocation
-                         :id (:principal-allocation/id pa)
-                         :amount (:principal-allocation/amount pa)
-                         :date (:principal-allocation/date pa)
-                         :reference (:principal-allocation/reference pa)})
-               principal-allocations)
+          (map (fn [i] {:event-type :inflow
+                        :sub-type (:inflow/source i)
+                        :id (:inflow/id i)
+                        :amount (:inflow/amount i)
+                        :date (:inflow/effective-date i)})
+               inflows)
+          (map (fn [o] {:event-type :outflow
+                        :sub-type (:outflow/type o)
+                        :id (:outflow/id o)
+                        :amount (:outflow/amount o)
+                        :date (:outflow/effective-date o)})
+               outflows)
           (map (fn [rp] {:event-type :retracted-payment
                          :id (:payment/id rp)
                          :amount (:payment/amount rp)
@@ -614,13 +651,6 @@
     (compare (.getTime ^java.util.Date date-a)
              (.getTime ^java.util.Date date-b))))
 
-(defn- waterfall-allocation?
-  "True if this principal-allocation flows through the waterfall.
-   :deposit type does NOT flow through waterfall (deposit ledger is separate).
-   nil type = backward compat (old allocations before type was added)."
-  [pa]
-  (not= :deposit (:principal-allocation/type pa)))
-
 (defn compute-thresholds
   "Compute cumulative payment thresholds for each installment.
 
@@ -662,44 +692,31 @@
 
    Uses precomputed thresholds instead of re-running waterfall per event.
 
-   Waterfall-affecting events:
-   - Payments: add to running total (money in)
-   - Refund disbursements: subtract from running total (money returned)
-   - Deposit offsets: add to running total (deposit applied to balance)
-   - Principal allocations: add to running total (funding allocated to fees)
+   Waterfall-affecting events are built from inflow/outflow deltas:
+   - Inflows: add to running total (money entering waterfall)
+   - Outflows: subtract from running total (money leaving contract)
 
-   When a refund reduces total below an installment's threshold, that
+   When an outflow reduces total below an installment's threshold, that
    installment's paid-date is removed."
-  [fees installments payments disbursements deposits principal-allocations]
+  [fees installments inflows outflows]
   (let [thresholds (compute-thresholds fees installments)
         ;; Build waterfall-affecting events with signed deltas
         waterfall-events
         (concat
-          ;; Payments add
-         (map (fn [p] {:delta (:payment/amount p)
-                       :date (:payment/date p)})
-              payments)
-          ;; Refund disbursements subtract
-         (->> disbursements
-              (filter #(= :refund (:disbursement/type %)))
-              (map (fn [d] {:delta (- (:disbursement/amount d))
-                            :date (:disbursement/date d)})))
-          ;; Deposit offsets add
-         (->> deposits
-              (filter #(= :offset (:deposit/type %)))
-              (map (fn [d] {:delta (:deposit/amount d)
-                            :date (:deposit/date d)})))
-          ;; Principal allocations add (only waterfall types)
-         (->> principal-allocations
-              (filter waterfall-allocation?)
-              (map (fn [pa] {:delta (:principal-allocation/amount pa)
-                             :date (:principal-allocation/date pa)}))))
+         ;; Inflows add
+         (map (fn [i] {:delta (:inflow/amount i)
+                       :date (:inflow/effective-date i)})
+              inflows)
+         ;; Outflows subtract
+         (map (fn [o] {:delta (- (:outflow/amount o))
+                       :date (:outflow/effective-date o)})
+              outflows))
         all-events (sort-by :date waterfall-events)]
     (:paid-dates
      (reduce
       (fn [{:keys [running-total paid-dates]} event]
         (let [new-total (+ running-total (:delta event))
-               ;; Only positive deltas (payments/offsets) set paid-date
+              ;; Only positive deltas (inflows) set paid-date
               payment-date (when (pos? (:delta event))
                              (:date event))
               new-paid-dates
@@ -790,34 +807,22 @@
    :payments (get-payments db contract-id)
    :disbursements (get-disbursements db contract-id)
    :deposits (get-deposits db contract-id)
-   :principal-allocations (get-principal-allocations db contract-id)})
+   :inflows (get-inflows db contract-id)
+   :outflows (get-outflows db contract-id)})
 
 (defn compute-waterfall-total
-  "Compute total payment amount flowing through waterfall.
+  "Compute available amount for waterfall allocation.
 
-   All amounts on entities are positive. Direction is determined by entity type:
-   - payment/* → money in (adds)
-   - disbursement/* type :refund → money out (subtracts)
-   - deposit/* type :offset → applied to balance (adds)
-   - principal-allocation/* type :fee-settlement or :installment-prepayment → adds
-   - principal-allocation/* type :deposit → excluded (deposit ledger is separate)"
-  [payments disbursements deposits principal-allocations]
-  (let [payments-sum (->> payments
-                          (map :payment/amount)
-                          (reduce + 0M))
-        refund-sum (->> disbursements
-                        (filter #(= :refund (:disbursement/type %)))
-                        (map :disbursement/amount)
-                        (reduce + 0M))
-        offset-sum (->> deposits
-                        (filter #(= :offset (:deposit/type %)))
-                        (map :deposit/amount)
-                        (reduce + 0M))
-        allocation-sum (->> principal-allocations
-                            (filter waterfall-allocation?)
-                            (map :principal-allocation/amount)
-                            (reduce + 0M))]
-    (+ (- payments-sum refund-sum) offset-sum allocation-sum)))
+   available = sum(inflows) - sum(outflows)
+
+   Inflows: money entering the contract's waterfall (funding, customer payments,
+   deposit offsets, settlement from another contract).
+   Outflows: money leaving the contract (borrower disbursement, settlement to
+   another contract, refunds)."
+  [inflows outflows]
+  (let [inflow-sum (reduce + 0M (map :inflow/amount inflows))
+        outflow-sum (reduce + 0M (map :outflow/amount outflows))]
+    (- inflow-sum outflow-sum)))
 
 (defn compute-deposit-held
   "Compute security deposit currently held.
@@ -846,40 +851,47 @@
 (defn funding-breakdown
   "Derive how principal was allocated at origination.
 
-   Pure derivation from facts. Returns breakdown + balance check.
-   All inputs are raw entity sequences from query-facts.
+   Pure derivation from outflows + waterfall allocations.
+   Outflows are explicit (borrower disbursement, settlement, refund).
+   Fee settlement, deposit, and prepayment are waterfall-derived.
 
    Args:
    - contract: contract entity map
-   - principal-allocations: principal-allocation entities
-   - deposits: deposit entities
-   - disbursements: disbursement entities"
-  [contract principal-allocations deposits disbursements]
+   - outflows: outflow entities for this contract
+   - waterfall-result: result from waterfall/waterfall (contains :allocations, :deposit-allocated)"
+  [contract outflows waterfall-result]
   (let [principal (:contract/principal contract)
-        fee-deductions (->> principal-allocations
-                            (filter #(not= :deposit (:principal-allocation/type %)))
-                            (map :principal-allocation/amount)
-                            (reduce + 0M))
-        deposit-from-funding (->> deposits
-                                  (filter #(and (= :received (:deposit/type %))
-                                                (= :funding (:deposit/source %))))
-                                  (map :deposit/amount)
-                                  (reduce + 0M))
-        merchant-disbursement (->> disbursements
-                                   (filter #(= :funding (:disbursement/type %)))
-                                   (map :disbursement/amount)
-                                   (reduce + 0M))
-        excess-returned (->> disbursements
-                             (filter #(= :excess-return (:disbursement/type %)))
-                             (map :disbursement/amount)
+        to-borrower (->> outflows
+                         (filter #(= :borrower (:outflow/type %)))
+                         (map :outflow/amount)
+                         (reduce + 0M))
+        to-settlement (->> outflows
+                           (filter #(= :settlement (:outflow/type %)))
+                           (map :outflow/amount)
+                           (reduce + 0M))
+        refunded (->> outflows
+                      (filter #(= :refund (:outflow/type %)))
+                      (map :outflow/amount)
+                      (reduce + 0M))
+        to-deposit (or (:deposit-allocated waterfall-result) 0M)
+        to-fees (->> (:allocations waterfall-result)
+                     (filter #(= :fee (:type %)))
+                     (map :amount)
+                     (reduce + 0M))
+        to-installments (->> (:allocations waterfall-result)
+                             (filter #(= :installment (:type %)))
+                             (map #(+ (:profit-paid %) (:principal-paid %)))
                              (reduce + 0M))
-        total-allocated (+ fee-deductions deposit-from-funding
-                           merchant-disbursement excess-returned)]
+        total-allocated (+ to-borrower to-settlement refunded
+                           to-deposit to-fees to-installments
+                           (:credit-balance waterfall-result))]
     {:principal principal
-     :fee-deductions fee-deductions
-     :deposit-from-funding deposit-from-funding
-     :merchant-disbursement merchant-disbursement
-     :excess-returned excess-returned
+     :to-borrower to-borrower
+     :to-settlement to-settlement
+     :refunded refunded
+     :to-deposit to-deposit
+     :to-fees to-fees
+     :to-installments to-installments
      :total-allocated total-allocated
      :balanced? (= principal total-allocated)}))
 
@@ -983,22 +995,27 @@
    - contract-id: UUID
    - as-of: java.util.Date (for determining overdue status)"
   [db contract-id as-of]
-  (let [{:keys [contract fees installments payments disbursements deposits
-                principal-allocations]}
+  (let [{:keys [contract fees installments payments deposits
+                inflows outflows]}
         (query-facts db contract-id)
 
         ;; Derive fee due-dates from days-after-disbursement + disbursed-at
         fees (derive-fee-due-dates fees (:contract/disbursed-at contract))
 
-        total-payments (compute-waterfall-total payments disbursements deposits
-                                                principal-allocations)
+        ;; Waterfall available = sum(inflows) - sum(outflows)
+        total-payments (compute-waterfall-total inflows outflows)
         deposit-held (compute-deposit-held deposits contract-id)
 
-        {:keys [allocations credit-balance]}
-        (waterfall/waterfall fees installments total-payments)
+        ;; Deposit obligation for waterfall: how much deposit still needs funding
+        deposit-required (or (:contract/security-deposit contract) 0M)
+        deposit-due (max 0M (- deposit-required deposit-held))
 
-        paid-dates (find-paid-dates fees installments payments disbursements deposits
-                                    principal-allocations)
+        waterfall-result
+        (waterfall/waterfall fees installments total-payments :deposit-due deposit-due)
+
+        {:keys [allocations deposit-allocated credit-balance]} waterfall-result
+
+        paid-dates (find-paid-dates fees installments inflows outflows)
         enriched-fees (enrich-fees fees allocations)
         enriched-installments (enrich-installments installments allocations paid-dates as-of)
         totals (compute-totals fees enriched-fees installments enriched-installments)]
@@ -1040,6 +1057,7 @@
       :fees enriched-fees
       :installments enriched-installments
       :deposit-held deposit-held
+      :deposit-allocated (or deposit-allocated 0M)
       :credit-balance credit-balance
       :documents {:clearance-letters (get-clearance-letters db contract-id)
                   :statements (get-statements db contract-id)
@@ -1092,15 +1110,19 @@
                       raw-fees (get-fees db contract-id)
                       fees (derive-fee-due-dates raw-fees (:contract/disbursed-at c))
                       installments (get-installments db contract-id)
-                      payments (get-payments db contract-id)
-                      disbursements (get-disbursements db contract-id)
+                      inflows (get-inflows db contract-id)
+                      outflows (get-outflows db contract-id)
                       deposits (get-deposits db contract-id)
-                      principal-allocations (get-principal-allocations db contract-id)
                       ;; Compute total for waterfall
-                      total-payments (compute-waterfall-total payments disbursements
-                                                              deposits principal-allocations)
+                      total-payments (compute-waterfall-total inflows outflows)
+                      deposit-held (compute-deposit-held deposits contract-id)
+                      deposit-required (or (:contract/security-deposit
+                                            (d/pull db [:contract/security-deposit]
+                                                    [:contract/id contract-id])) 0M)
+                      deposit-due (max 0M (- deposit-required deposit-held))
                       ;; Run waterfall to get allocations
-                      {:keys [allocations]} (waterfall/waterfall fees installments total-payments)
+                      {:keys [allocations]} (waterfall/waterfall fees installments total-payments
+                                                                 :deposit-due deposit-due)
                       ;; Compute totals
                       enriched-fees (enrich-fees fees allocations)
                       enriched-installments (enrich-installments installments allocations {} (java.util.Date.))
@@ -1157,6 +1179,8 @@
                                         [?e :disbursement/contract ?c]
                                         [?e :deposit/contract ?c]
                                         [?e :deposit/target-contract ?c]
+                                        [?e :inflow/contract ?c]
+                                        [?e :outflow/contract ?c]
                                         [?e :principal-allocation/contract ?c]
                                         [?e :clearance-letter/contract ?c]
                                         [?e :statement/contract ?c]
@@ -1182,6 +1206,8 @@
       "payment" :payment
       "disbursement" :disbursement
       "deposit" :deposit
+      "inflow" :inflow
+      "outflow" :outflow
       "principal-allocation" :principal-allocation
       "clearance-letter" :clearance-letter
       "statement" :statement
@@ -1197,6 +1223,8 @@
   "Attributes that point to parent entities (redundant in contract context)."
   #{:payment/contract :fee/contract :installment/contract
     :disbursement/contract :deposit/contract :deposit/target-contract
+    :inflow/contract :inflow/source-contract
+    :outflow/contract :outflow/target-contract
     :principal-allocation/contract :contract/facility
     :clearance-letter/contract :statement/contract
     :contract-agreement/contract :signing/document})
@@ -1229,12 +1257,14 @@
                                  :where [?e :fee/type ?v]]
                         :args [hdb (vec entity-ids)]})
         fee-type-map (into {} fee-types)
-        ;; Sub-types for disbursements and deposits
+        ;; Sub-types for disbursements, deposits, inflows, and outflows
         sub-types (d/q {:query '[:find ?e ?v
                                  :in $ [?e ...]
                                  :where
                                  (or [?e :disbursement/type ?v]
-                                     [?e :deposit/type ?v])]
+                                     [?e :deposit/type ?v]
+                                     [?e :inflow/source ?v]
+                                     [?e :outflow/type ?v])]
                         :args [hdb (vec entity-ids)]})
         sub-type-map (into {} sub-types)]
     (into {}

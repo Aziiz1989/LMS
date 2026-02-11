@@ -1,11 +1,14 @@
 (ns user
-  (:require [lms.core :as core]
+  (:require [clojure.tools.namespace.repl :refer [refresh set-refresh-dirs]]
+            [lms.core :as core]
             [lms.db :as db]
             [lms.waterfall :as waterfall]
             [lms.contract :as contract]
             [lms.operations :as ops]
             [datomic.client.api :as d]
             [taoensso.timbre :as log]))
+
+(set-refresh-dirs "src" "dev")
 
 (defonce server (atom nil))
 
@@ -24,10 +27,19 @@
   (stop)
   (start))
 
-(comment 
-  (start)
-  (restart))
+(defn reset
+  "Stop server, reload all changed namespaces, restart server.
+   The gold standard one-command dev reload."
+  []
+  (stop)
+  (refresh :after 'user/start))
 
+(comment
+  (start)
+  (stop)
+  (reset)     ;; <-- use this: reloads changed code + restarts server
+  (restart)   ;; <-- use this only if reset fails (skips code reload)
+  )
 
 ;; ============================================================
 ;; Week 1 Verification
@@ -68,7 +80,7 @@
                               :contract/customer-id "CR-999999"
                               :contract/disbursed-at #inst "2024-01-02"
                               :contract/start-date #inst "2024-01-01"
-                                                            :contract/principal 1200000M
+                              :contract/principal 1200000M
                               :contract/security-deposit 60000M}
 
                              ;; Fee
@@ -145,7 +157,7 @@
                                           (= 0M (:principal-paid inst))))
 
                       :total-outstanding-correct (= (+ 1200000M 20000M 0M -50000M)
-                                                   (:total-outstanding state))
+                                                    (:total-outstanding state))
 
                       :credit-balance-zero (= 0M (:credit-balance state))
 
@@ -194,7 +206,7 @@
                            :contract/customer-id "CR-100001"
                            :contract/disbursed-at #inst "2024-01-02"
                            :contract/start-date #inst "2024-01-01"
-                                                      :contract/principal 1200000M
+                           :contract/principal 1200000M
                            :contract/security-deposit 60000M}
                           [{:fee/id (random-uuid)
                             :fee/type :management
@@ -204,8 +216,8 @@
                             {:installment/id (random-uuid)
                              :installment/seq i
                              :installment/due-date (java.util.Date/from
-                                                     (java.time.Instant/parse
-                                                      (format "2024-%02d-01T00:00:00Z" i)))
+                                                    (java.time.Instant/parse
+                                                     (format "2024-%02d-01T00:00:00Z" i)))
                              :installment/principal-due 100000M
                              :installment/profit-due 15000M})
                           "system")
@@ -220,7 +232,7 @@
                            :contract/customer-id "CR-100002"
                            :contract/disbursed-at #inst "2024-01-02"
                            :contract/start-date #inst "2023-06-01"
-                                                      :contract/principal 800000M
+                           :contract/principal 800000M
                            :contract/security-deposit 40000M}
                           [{:fee/id (random-uuid)
                             :fee/type :management
@@ -230,10 +242,10 @@
                             {:installment/id (random-uuid)
                              :installment/seq i
                              :installment/due-date (java.util.Date/from
-                                                     (.toInstant
-                                                       (.atStartOfDay
-                                                         (.plusMonths (java.time.LocalDate/of 2023 6 1) (dec i))
-                                                         java.time.ZoneOffset/UTC)))
+                                                    (.toInstant
+                                                     (.atStartOfDay
+                                                      (.plusMonths (java.time.LocalDate/of 2023 6 1) (dec i))
+                                                      java.time.ZoneOffset/UTC)))
                              :installment/principal-due 66666M
                              :installment/profit-due 10000M})
                           "system")
@@ -255,7 +267,7 @@
                            :contract/customer-id "CR-100003"
                            :contract/disbursed-at #inst "2024-01-02"
                            :contract/start-date #inst "2024-01-01"
-                                                      :contract/principal 300000M
+                           :contract/principal 300000M
                            :contract/security-deposit 15000M}
                           [{:fee/id (random-uuid)
                             :fee/type :management
@@ -265,8 +277,8 @@
                             {:installment/id (random-uuid)
                              :installment/seq i
                              :installment/due-date (java.util.Date/from
-                                                     (java.time.Instant/parse
-                                                      (format "2024-%02d-01T00:00:00Z" i)))
+                                                    (java.time.Instant/parse
+                                                     (format "2024-%02d-01T00:00:00Z" i)))
                              :installment/principal-due 50000M
                              :installment/profit-due 5000M})
                           "system")
@@ -316,6 +328,4 @@
   ;; Test contract-state
   (def test-id (random-uuid))
   ;; ... create contract ...
-  (contract/contract-state (d/db conn) test-id (java.util.Date.))
-
-  )
+  (contract/contract-state (d/db conn) test-id (java.util.Date.)))

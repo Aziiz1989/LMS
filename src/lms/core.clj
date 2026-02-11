@@ -79,9 +79,8 @@
 ;; Connection — created once, injected via middleware
 ;; ============================================================
 
-(def conn
-  "Database connection. Initialized on first use (delay).
-   Moved here from handlers.clj — core is the composition root."
+(defonce ^{:doc "Database connection (delay). Survives namespace reloads."}
+  conn
   (delay
     (let [c (db/get-connection)]
       (db/install-schema c)
@@ -96,46 +95,46 @@
 
 (def router
   (ring/router
-   [["/" {:get handlers/home-handler}]
+   [["/" {:get #'handlers/home-handler}]
     ["/contracts"
-     ["" {:get handlers/list-contracts-handler}]
-     ["/new" {:get handlers/new-contract-handler}]
-     ["/board" {:post handlers/board-contract-handler}]
-     ["/board-existing" {:post handlers/board-existing-contract-handler}]
+     ["" {:get #'handlers/list-contracts-handler}]
+     ["/new" {:get #'handlers/new-contract-handler}]
+     ["/board" {:post #'handlers/board-contract-handler}]
+     ["/board-existing" {:post #'handlers/board-existing-contract-handler}]
      ["/:id"
-      ["" {:get handlers/view-contract-handler}]
-      ["/history-tab" {:get handlers/history-tab-handler}]
-      ["/preview-payment" {:post handlers/preview-payment-handler}]
-      ["/record-payment" {:post handlers/record-payment-handler}]
-      ["/retract-payment" {:post handlers/retract-payment-handler}]
-      ["/retract-contract" {:post handlers/retract-contract-handler}]
-      ["/calculate-settlement" {:post handlers/calculate-settlement-handler}]
-      ["/originate" {:post handlers/originate-handler}]
-      ["/retract-origination" {:post handlers/retract-origination-handler}]
-      ["/guarantors" {:post handlers/add-guarantor-handler}]
-      ["/guarantors/:party-id/remove" {:post handlers/remove-guarantor-handler}]
-      ["/signatories" {:post handlers/add-signatory-handler}]
-      ["/signatories/:party-id/remove" {:post handlers/remove-signatory-handler}]
-      ["/generate-clearance-letter" {:post handlers/generate-clearance-letter-handler}]
-      ["/generate-statement" {:post handlers/generate-statement-handler}]
-      ["/generate-contract-agreement" {:post handlers/generate-contract-agreement-handler}]
-      ["/documents/:type/:doc-id/download" {:get handlers/download-document-pdf-handler}]]]
+      ["" {:get #'handlers/view-contract-handler}]
+      ["/history-tab" {:get #'handlers/history-tab-handler}]
+      ["/preview-payment" {:post #'handlers/preview-payment-handler}]
+      ["/record-payment" {:post #'handlers/record-payment-handler}]
+      ["/retract-payment" {:post #'handlers/retract-payment-handler}]
+      ["/retract-contract" {:post #'handlers/retract-contract-handler}]
+      ["/calculate-settlement" {:post #'handlers/calculate-settlement-handler}]
+      ["/originate" {:post #'handlers/originate-handler}]
+      ["/retract-origination" {:post #'handlers/retract-origination-handler}]
+      ["/guarantors" {:post #'handlers/add-guarantor-handler}]
+      ["/guarantors/:party-id/remove" {:post #'handlers/remove-guarantor-handler}]
+      ["/signatories" {:post #'handlers/add-signatory-handler}]
+      ["/signatories/:party-id/remove" {:post #'handlers/remove-signatory-handler}]
+      ["/generate-clearance-letter" {:post #'handlers/generate-clearance-letter-handler}]
+      ["/generate-statement" {:post #'handlers/generate-statement-handler}]
+      ["/generate-contract-agreement" {:post #'handlers/generate-contract-agreement-handler}]
+      ["/documents/:type/:doc-id/download" {:get #'handlers/download-document-pdf-handler}]]]
     ["/parties"
-     ["" {:get handlers/list-parties-handler
-          :post handlers/create-party-handler}]
-     ["/new" {:get handlers/new-party-handler}]
+     ["" {:get #'handlers/list-parties-handler
+          :post #'handlers/create-party-handler}]
+     ["/new" {:get #'handlers/new-party-handler}]
      ["/:id"
-      ["" {:get handlers/view-party-handler}]
-      ["/update" {:post handlers/update-party-handler}]
-      ["/ownership" {:post handlers/add-ownership-handler}]
-      ["/ownership/:ownership-id/remove" {:post handlers/remove-ownership-handler}]]]
+      ["" {:get #'handlers/view-party-handler}]
+      ["/update" {:post #'handlers/update-party-handler}]
+      ["/ownership" {:post #'handlers/add-ownership-handler}]
+      ["/ownership/:ownership-id/remove" {:post #'handlers/remove-ownership-handler}]]]
     ;; Legacy test routes (keep for debugging)
-    ["/test" {:get home-page}]
+    ["/test" {:get #'home-page}]
     ["/api"
-     ["/time" {:get time-handler}]
-     ["/db-test" {:get db-test-handler}]
-     ["/parties/search" {:get handlers/search-parties-handler}]
-     ["/fee-row-template" {:get handlers/fee-row-template-handler}]]]
+     ["/time" {:get #'time-handler}]
+     ["/db-test" {:get #'db-test-handler}]
+     ["/parties/search" {:get #'handlers/search-parties-handler}]
+     ["/fee-row-template" {:get #'handlers/fee-row-template-handler}]]]
    {:conflicts nil}))
 
 (def app
@@ -148,7 +147,7 @@
 
 (defn start-server [& {:keys [port] :or {port 3001}}]
   (log/info "Starting server on port" port)
-  (jetty/run-jetty app {:port port :join? false}))
+  (jetty/run-jetty #'app {:port port :join? false}))
 
 (defn -main [& _args]
   (start-server)

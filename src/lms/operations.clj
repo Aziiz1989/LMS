@@ -60,11 +60,156 @@
             :payment/amount amount
             :payment/date date
             :payment/contract [:contract/id contract-id]
-            :payment/reference reference}
+            :payment/reference reference
+            :payment/inflows [{:inflow/id (random-uuid)
+                               :inflow/amount amount
+                               :inflow/effective-date date
+                               :inflow/contract [:contract/id contract-id]
+                               :inflow/source (if source-contract :settlement :customer)}]}
      channel (assoc :payment/channel channel)
      source-contract (assoc :payment/source-contract
                             [:contract/id source-contract]))
    (db/recording-metadata user-id :note note)])
+
+;; ============================================================
+;; Inflow / Outflow Operations
+;; ============================================================
+
+(defn record-funding-inflow
+  "Record funding inflow — principal enters the contract's waterfall.
+
+   Creates an inflow/* entity with source :funding. This is the first
+   origination step: the full principal amount enters the waterfall.
+   The waterfall then allocates: deposit → fees → installments.
+
+   Args:
+   - conn: Datomic connection
+   - contract-id: UUID of contract
+   - amount: Funding amount (typically = contract principal)
+   - date: Business date — origination/funding date
+   - user-id: User performing the operation
+
+   Returns: Transaction result map"
+  [conn contract-id amount date user-id]
+  (when-not (pos? amount)
+    (throw (ex-info "Funding inflow amount must be positive"
+                    {:amount amount :error :non-positive-amount})))
+  (d/transact conn
+              {:tx-data [{:inflow/id (random-uuid)
+                          :inflow/amount amount
+                          :inflow/effective-date date
+                          :inflow/contract [:contract/id contract-id]
+                          :inflow/source :funding}
+                         (db/recording-metadata user-id
+                                                :note "Funding inflow")]}))
+
+(defn record-settlement
+  "Record settlement between contracts — refinancing.
+
+   Creates two entities atomically:
+   1. Outflow on the new contract (money leaving to settle old contract)
+   2. Inflow on the old contract (money arriving from new contract)
+
+   Args:
+   - conn: Datomic connection
+   - new-contract-id: UUID of the new (refinancing) contract
+   - old-contract-id: UUID of the old (being refinanced) contract
+   - amount: Settlement amount
+   - date: Business date
+   - user-id: User performing the operation
+
+   Returns: Transaction result map"
+  [conn new-contract-id old-contract-id amount date user-id]
+  (when-not (pos? amount)
+    (throw (ex-info "Settlement amount must be positive"
+                    {:amount amount :error :non-positive-amount})))
+  (d/transact conn
+              {:tx-data [{:outflow/id (random-uuid)
+                          :outflow/amount amount
+                          :outflow/effective-date date
+                          :outflow/contract [:contract/id new-contract-id]
+                          :outflow/type :settlement
+                          :outflow/target-contract [:contract/id old-contract-id]}
+                         {:inflow/id (random-uuid)
+                          :inflow/amount amount
+                          :inflow/effective-date date
+                          :inflow/contract [:contract/id old-contract-id]
+                          :inflow/source :settlement
+                          :inflow/source-contract [:contract/id new-contract-id]}
+                         (db/recording-metadata user-id
+                                                :note "Refinancing settlement")]}))
+
+(defn set-disbursed-at
+  "Set contract as disbursed — marks it active.
+
+   Sets :contract/disbursed-at timestamp. If the contract has
+   :contract/days-to-first-installment, shifts all installment dates
+   so the first installment falls on disbursed-at + days.
+
+   Args:
+   - conn: Datomic connection
+   - contract-id: UUID of contract
+   - date: Disbursement date
+   - user-id: User performing the operation
+
+   Returns: Transaction result map"
+  [conn contract-id date user-id]
+  (let [db (d/db conn)
+        contract (d/pull db [:contract/days-to-first-installment] [:contract/id contract-id])
+        days-to-first (:contract/days-to-first-installment contract)
+        installments (contract/get-installments db contract-id)
+
+        shift-days (if (and days-to-first (seq installments))
+                     (compute-date-shift date days-to-first installments)
+                     0)
+
+        installment-updates
+        (when (not= 0 shift-days)
+          (for [inst installments]
+            {:db/id [:installment/id (:installment/id inst)]
+             :installment/due-date
+             (dates/add-days (:installment/due-date inst) shift-days)}))]
+
+    (d/transact conn
+                {:tx-data (concat
+                           [{:contract/id contract-id
+                             :contract/disbursed-at date}]
+                           installment-updates
+                           [(db/recording-metadata user-id
+                                                   :note "Set disbursed-at")])})))
+
+(defn shift-installment-dates
+  "Shift all installment due dates for a contract.
+
+   Computes shift so first installment lands on disbursed-at + days-to-first.
+
+   Args:
+   - conn: Datomic connection
+   - contract-id: UUID of contract
+   - disbursed-at: Disbursement date
+   - days-to-first: Days from disbursement to first installment
+   - user-id: User performing the operation
+
+   Returns: Transaction result map"
+  [conn contract-id disbursed-at days-to-first user-id]
+  (let [db (d/db conn)
+        installments (contract/get-installments db contract-id)
+        shift-days (if (seq installments)
+                     (compute-date-shift disbursed-at days-to-first installments)
+                     0)]
+    (when (not= 0 shift-days)
+      (d/transact conn
+                  {:tx-data (concat
+                             (for [inst installments]
+                               {:db/id [:installment/id (:installment/id inst)]
+                                :installment/due-date
+                                (dates/add-days (:installment/due-date inst) shift-days)})
+                             [(db/recording-metadata user-id
+                                                     :note "Installment date shift")])}))))
+
+;; ============================================================
+;; Payment Operations
+;; ============================================================
 
 (defn record-payment
   "Record a customer payment.
@@ -131,20 +276,23 @@
         now (java.util.Date.)
 
         ;; Query facts once
-        {:keys [fees installments payments disbursements deposits
-                principal-allocations]}
+        {:keys [contract fees installments deposits inflows outflows]}
         (contract/query-facts db contract-id)
 
         ;; Current waterfall
-        current-total (contract/compute-waterfall-total
-                       payments disbursements deposits principal-allocations)
-        before-wf (waterfall/waterfall fees installments current-total)
+        current-total (contract/compute-waterfall-total inflows outflows)
+        deposit-held (contract/compute-deposit-held deposits (:contract/id contract))
+        deposit-required (or (:contract/security-deposit contract) 0M)
+        deposit-due (max 0M (- deposit-required deposit-held))
+        before-wf (waterfall/waterfall fees installments current-total
+                                       :deposit-due deposit-due)
         before-fees (contract/enrich-fees fees (:allocations before-wf))
         before-insts (contract/enrich-installments
                       installments (:allocations before-wf) {} now)
 
         ;; Waterfall with additional payment — pure function, no d/with needed
-        after-wf (waterfall/waterfall fees installments (+ current-total amount))
+        after-wf (waterfall/waterfall fees installments (+ current-total amount)
+                                      :deposit-due deposit-due)
         after-fees (contract/enrich-fees fees (:allocations after-wf))
         after-insts (contract/enrich-installments
                      installments (:allocations after-wf) {} now)
@@ -303,9 +451,12 @@
         payments (contract/get-payments db contract-id)
         disbursements (contract/get-disbursements db contract-id)
         deposits (contract/get-deposits db contract-id)
-        principal-allocations (contract/get-principal-allocations db contract-id)
+        inflows (contract/get-inflows db contract-id)
+        outflows (contract/get-outflows db contract-id)
 
         ;; Build retract statements for all entities
+        ;; Note: component inflows (on payments) and outflows (on disbursements)
+        ;; cascade automatically. Independent ones need explicit retraction.
         retract-stmts
         (concat
          (map (fn [f] [:db/retractEntity [:fee/id (:fee/id f)]]) fees)
@@ -313,8 +464,8 @@
          (map (fn [p] [:db/retractEntity [:payment/id (:payment/id p)]]) payments)
          (map (fn [d] [:db/retractEntity [:disbursement/id (:disbursement/id d)]]) disbursements)
          (map (fn [d] [:db/retractEntity [:deposit/id (:deposit/id d)]]) deposits)
-         (map (fn [pa] [:db/retractEntity [:principal-allocation/id (:principal-allocation/id pa)]])
-              principal-allocations)
+         (map (fn [i] [:db/retractEntity [:inflow/id (:inflow/id i)]]) inflows)
+         (map (fn [o] [:db/retractEntity [:outflow/id (:outflow/id o)]]) outflows)
           ;; Retract the contract itself last
          [[:db/retractEntity contract-ref]])]
 
@@ -327,71 +478,116 @@
                                      :tx/author user-id}
                               note (assoc :tx/note note))])})))
 
-(defn retract-origination
-  "Retract all origination entities for a contract — data correction.
+;; ── Origination Retraction ──
+;;
+;; Retracting origination is NOT a single function. Each step is retracted
+;; independently, mirroring how origination steps are recorded:
+;;
+;; 1. retract-inflow       — retract the funding inflow
+;; 2. retract-disbursement — retract borrower disbursement (outflow cascades)
+;; 3. retract-deposit      — retract funding deposit entity
+;; 4. retract-settlement   — retract settlement outflow + inflow pair (refi)
+;; 5. retract-disbursement — retract refund disbursement (outflow cascades)
+;; 6. unset-disbursed-at   — retract disbursed-at, unshift installment dates
 
-   Finds and atomically retracts:
-   - All principal-allocation/* entities (fee deductions from funding)
-   - All disbursement/* entities with type :funding or :excess-return
-   - All deposit/* entities with source :funding
-   - contract/disbursed-at (reverts status to :pending)
-   - Installment date shifts (recomputed relative to today)
-
-   TX metadata records WHO corrected it, WHY, and WHAT contract.
-   Datomic history preserves retracted datoms for forensics.
-
-   Use this for: wrong origination amounts, duplicate origination, etc.
+(defn retract-inflow
+  "Retract an inflow entity — data correction.
 
    Args:
    - conn: Datomic connection
-   - contract-id: UUID of contract
+   - inflow-id: UUID of inflow to retract
    - reason: Keyword — :correction, :duplicate-removal, or :erroneous-entry
    - user-id: User performing the retraction
    - note: Optional free-text explanation
 
-   Returns: Transaction result map
+   Returns: Transaction result map"
+  [conn inflow-id reason user-id & {:keys [note]}]
+  (retract-entity conn :inflow inflow-id reason user-id :note note))
 
-   Usage:
-     (retract-origination conn contract-uuid :correction \"user-1\"
-                          :note \"Wrong fee deduction amount\")"
-  [conn contract-id reason user-id & {:keys [note]}]
+(defn retract-outflow
+  "Retract an outflow entity — data correction.
+
+   Args:
+   - conn: Datomic connection
+   - outflow-id: UUID of outflow to retract
+   - reason: Keyword — :correction, :duplicate-removal, or :erroneous-entry
+   - user-id: User performing the retraction
+   - note: Optional free-text explanation
+
+   Returns: Transaction result map"
+  [conn outflow-id reason user-id & {:keys [note]}]
+  (retract-entity conn :outflow outflow-id reason user-id :note note))
+
+(defn retract-settlement
+  "Retract a settlement between contracts — data correction.
+
+   Retracts both entities atomically:
+   1. The settlement outflow on the new contract
+   2. The settlement inflow on the old contract (queried by :inflow/source-contract)
+
+   Args:
+   - conn: Datomic connection
+   - outflow-id: UUID of the settlement outflow on the new contract
+   - user-id: User performing the retraction
+   - reason: Keyword
+   - note: Optional note
+
+   Returns: Transaction result map"
+  [conn outflow-id user-id reason & {:keys [note]}]
   (let [db (d/db conn)
+        ;; Find the corresponding settlement inflow on the old contract
+        settlement-inflows
+        (->> (d/q {:query '[:find ?inflow-id
+                            :in $ ?outflow-id
+                            :where
+                            [?o :outflow/id ?outflow-id]
+                            [?o :outflow/target-contract ?old-c]
+                            [?i :inflow/source :settlement]
+                            [?i :inflow/contract ?old-c]
+                            [?i :inflow/source-contract ?new-c]
+                            [?o :outflow/contract ?new-c]
+                            [?i :inflow/id ?inflow-id]]
+                   :args [db outflow-id]})
+             (map first))]
+    (d/transact conn
+                {:tx-data (concat
+                           [[:db/retractEntity [:outflow/id outflow-id]]]
+                           (map (fn [iid] [:db/retractEntity [:inflow/id iid]])
+                                settlement-inflows)
+                           [(cond-> {:db/id "datomic.tx"
+                                     :tx/reason reason
+                                     :tx/corrects [:outflow/id outflow-id]
+                                     :tx/author user-id}
+                              note (assoc :tx/note note))])})))
 
-        ;; Query contract for disbursed-at and days-to-first-installment
+(defn unset-disbursed-at
+  "Retract contract/disbursed-at — reverts contract status to :pending.
+
+   Also unshifts installment dates (recomputed relative to today so
+   re-origination can reshift from the new date).
+
+   Args:
+   - conn: Datomic connection
+   - contract-id: UUID of contract
+   - user-id: User performing the retraction
+   - note: Optional note
+
+   Returns: Transaction result map"
+  [conn contract-id user-id & {:keys [note]}]
+  (let [db (d/db conn)
         contract (d/pull db [:contract/disbursed-at
                              :contract/days-to-first-installment]
                          [:contract/id contract-id])
         disbursed-at (:contract/disbursed-at contract)
         days-to-first (:contract/days-to-first-installment contract)
-
-        ;; Query origination-created entities
-        principal-allocations (contract/get-principal-allocations db contract-id)
-        disbursements (contract/get-disbursements db contract-id)
-        deposits (contract/get-deposits db contract-id)
         installments (contract/get-installments db contract-id)
 
-        ;; Filter to origination-related entities only
-        funding-disbursements (filter #(#{:funding :excess-return} (:disbursement/type %))
-                                      disbursements)
-        funding-deposits (filter #(= :funding (:deposit/source %)) deposits)
-
-        ;; Build retract statements for entities
-        retract-stmts
-        (concat
-         (map (fn [pa] [:db/retractEntity [:principal-allocation/id (:principal-allocation/id pa)]])
-              principal-allocations)
-         (map (fn [d] [:db/retractEntity [:disbursement/id (:disbursement/id d)]])
-              funding-disbursements)
-         (map (fn [d] [:db/retractEntity [:deposit/id (:deposit/id d)]])
-              funding-deposits))
-
-        ;; Retract contract/disbursed-at (reverts status to :pending)
+        ;; Retract disbursed-at
         disbursed-at-retraction
         (when disbursed-at
           [[:db/retract [:contract/id contract-id] :contract/disbursed-at disbursed-at]])
 
         ;; Recompute installment dates relative to today
-        ;; Re-origination will recompute from the new disbursement date
         today (java.util.Date.)
         shift-days (if (and disbursed-at days-to-first (seq installments))
                      (compute-date-shift today days-to-first installments)
@@ -403,17 +599,16 @@
              :installment/due-date
              (dates/add-days (:installment/due-date inst) shift-days)}))]
 
-    (when (empty? retract-stmts)
-      (throw (ex-info "No origination entities found to retract"
-                      {:contract-id contract-id :error :nothing-to-retract})))
+    (when-not disbursed-at
+      (throw (ex-info "Contract is not disbursed"
+                      {:contract-id contract-id :error :not-disbursed})))
 
     (d/transact conn
                 {:tx-data (concat
-                           retract-stmts
                            disbursed-at-retraction
                            date-reversals
                            [(cond-> {:db/id "datomic.tx"
-                                     :tx/reason reason
+                                     :tx/reason :correction
                                      :tx/corrects [:contract/id contract-id]
                                      :tx/author user-id}
                               note (assoc :tx/note note))])})))
@@ -584,10 +779,10 @@
 (defn offset-deposit
   "Apply security deposit to outstanding balance.
 
-   Creates a deposit/* entity with type :offset. This is a non-cash
-   transaction that flows through the waterfall like a regular payment.
-   The deposit is no longer held (reduces deposit-held) and is applied
-   to fees/installments.
+   Creates a deposit/* entity with type :offset AND an inflow/* entity
+   with source :deposit. The deposit entity tracks the deposit ledger
+   (reduces deposit-held). The inflow enters the contract's waterfall
+   to be allocated by priority (deposit → fees → installments).
 
    Args:
    - conn: Datomic connection
@@ -614,6 +809,11 @@
                           :deposit/amount amount
                           :deposit/date date
                           :deposit/contract [:contract/id contract-id]}
+                         {:inflow/id (random-uuid)
+                          :inflow/amount amount
+                          :inflow/effective-date date
+                          :inflow/contract [:contract/id contract-id]
+                          :inflow/source :deposit}
                          (db/recording-metadata user-id :note reason)]}))
 
 (defn transfer-deposit
@@ -860,24 +1060,17 @@
     (dates/days-between current-first-date expected-first-date)))
 
 (defn record-disbursement
-  "Record loan disbursement (funding) to customer.
+  "Record disbursement to borrower — money wired out.
 
-   Creates a disbursement/* entity with type :funding. This records that
-   funds were actually transferred to the customer. Funding disbursements
-   don't affect the waterfall — they're just the record of loan funding.
+   Creates a disbursement/* entity with a component outflow (type :borrower).
+   The outflow reduces available funds in the contract's waterfall.
 
-   Also sets :contract/disbursed-at to mark the contract as active.
-   Once disbursed, the contract status will derive as :active.
-
-   If the contract has :contract/days-to-first-installment set, all installment
-   due dates are shifted so the first installment falls on
-   disbursed-at + days-to-first-installment. Fee due dates are NOT shifted —
-   they are set explicitly and independent of the installment schedule.
+   This does NOT set :contract/disbursed-at — use set-disbursed-at separately.
 
    Args:
    - conn: Datomic connection
    - contract-id: UUID of contract
-   - amount: Disbursement amount (must be positive, should match contract principal)
+   - amount: Disbursement amount (must be positive)
    - date: Business date — when funds were sent
    - reference: External reference (wire transfer ID, etc.)
    - user-id: User performing the operation
@@ -887,49 +1080,29 @@
    Returns: Transaction result map
 
    Usage:
-     (record-disbursement conn contract-id 1000000M #inst \"2024-01-15\"
+     (record-disbursement conn contract-id 790000M #inst \"2024-01-15\"
                           \"WT-001\" \"user-1\"
                           :iban \"SA242000...\" :bank \"ANB\")"
   [conn contract-id amount date reference user-id & {:keys [iban bank]}]
   (when-not (pos? amount)
     (throw (ex-info "Disbursement amount must be positive"
                     {:amount amount :error :non-positive-amount})))
-  (let [db (d/db conn)
-        contract (d/pull db [:contract/days-to-first-installment] [:contract/id contract-id])
-        days-to-first (:contract/days-to-first-installment contract)
-        installments (contract/get-installments db contract-id)
-
-        ;; Compute shift (0 if days-to-first not set or no installments)
-        shift-days (if (and days-to-first (seq installments))
-                     (compute-date-shift date days-to-first installments)
-                     0)
-
-        ;; Shift all installment due dates (fee due dates are NOT shifted —
-        ;; they are set explicitly by the user and independent of the schedule)
-        installment-updates
-        (when (not= 0 shift-days)
-          (for [inst installments]
-            {:db/id [:installment/id (:installment/id inst)]
-             :installment/due-date
-             (dates/add-days (:installment/due-date inst) shift-days)}))
-
-        disbursement-entity
-        (cond-> {:disbursement/id (random-uuid)
-                 :disbursement/type :funding
-                 :disbursement/amount amount
-                 :disbursement/date date
-                 :disbursement/contract [:contract/id contract-id]
-                 :disbursement/reference reference}
-          iban (assoc :disbursement/iban iban)
-          bank (assoc :disbursement/bank bank))]
-
-    (d/transact conn
-                {:tx-data (concat
-                           [disbursement-entity]
-                           installment-updates
-                           [{:db/id [:contract/id contract-id]
-                             :contract/disbursed-at date}
-                            (db/recording-metadata user-id)])})))
+  (d/transact conn
+              {:tx-data [(cond-> {:disbursement/id (random-uuid)
+                                  :disbursement/type :funding
+                                  :disbursement/amount amount
+                                  :disbursement/date date
+                                  :disbursement/contract [:contract/id contract-id]
+                                  :disbursement/reference reference
+                                  :disbursement/outflows
+                                  [{:outflow/id (random-uuid)
+                                    :outflow/amount amount
+                                    :outflow/effective-date date
+                                    :outflow/contract [:contract/id contract-id]
+                                    :outflow/type :borrower}]}
+                           iban (assoc :disbursement/iban iban)
+                           bank (assoc :disbursement/bank bank))
+                         (db/recording-metadata user-id)]}))
 
 (defn record-refund
   "Record a refund to customer — money returned.
@@ -966,97 +1139,25 @@
                           :disbursement/amount amount
                           :disbursement/date date
                           :disbursement/contract [:contract/id contract-id]
-                          :disbursement/reference reference}
+                          :disbursement/reference reference
+                          :disbursement/outflows
+                          [{:outflow/id (random-uuid)
+                            :outflow/amount amount
+                            :outflow/effective-date date
+                            :outflow/contract [:contract/id contract-id]
+                            :outflow/type :refund}]}
                          (db/recording-metadata user-id :note note)]}))
 
 ;; ============================================================
-;; Principal Allocation Operations
+;; Legacy Operations (removed — replaced by inflow/outflow model)
 ;; ============================================================
-
-(defn record-principal-allocation
-  "Record a deduction from principal at origination.
-
-   Creates a principal-allocation/* entity. Records that part of the
-   principal was allocated for a specific purpose — fee settlement,
-   deposit, or installment prepayment.
-
-   Type determines waterfall behavior:
-   - :fee-settlement     → flows through waterfall (settles a fee)
-   - :installment-prepayment → flows through waterfall (prepays installments)
-   - :deposit            → does NOT flow through waterfall (deposit ledger is separate)
-
-   Args:
-   - conn: Datomic connection
-   - contract-id: UUID of contract
-   - amount: Allocation amount (must be positive)
-   - date: Business date — typically origination date
-   - user-id: User performing the operation
-   - type: Keyword — :fee-settlement, :deposit, or :installment-prepayment
-   - fee-id: Optional UUID of the fee being settled (for :fee-settlement type)
-   - reference: Optional external reference or description
-   - note: Optional note
-
-   Returns: Transaction result map
-
-   Usage:
-     (record-principal-allocation conn contract-id 46687.50M
-                                  #inst \"2024-01-15\" \"user-1\"
-                                  :type :fee-settlement
-                                  :fee-id fee-uuid
-                                  :reference \"FUNDING-FEE-SETTLEMENT\")"
-  [conn contract-id amount date user-id & {:keys [reference note fee-id type]}]
-  (when-not (pos? amount)
-    (throw (ex-info "Principal allocation amount must be positive"
-                    {:amount amount :error :non-positive-amount})))
-  (d/transact conn
-              {:tx-data [(cond-> {:principal-allocation/id (random-uuid)
-                                  :principal-allocation/amount amount
-                                  :principal-allocation/date date
-                                  :principal-allocation/contract [:contract/id contract-id]}
-                           type (assoc :principal-allocation/type type)
-                           fee-id (assoc :principal-allocation/fee [:fee/id fee-id])
-                           reference (assoc :principal-allocation/reference reference))
-                         (db/recording-metadata user-id :note note)]}))
-
-(defn record-excess-return
-  "Record return of customer excess via disbursement wire.
-
-   Creates a disbursement/* entity with type :excess-return. This records
-   that application-level excess (customer pre-paid more than final obligations)
-   was returned to the customer, typically bundled in the same wire as the
-   loan funding.
-
-   Unlike :refund disbursements, :excess-return does NOT affect the waterfall —
-   the excess was never in the waterfall. It came from the external application
-   system.
-
-   Args:
-   - conn: Datomic connection
-   - contract-id: UUID of contract
-   - amount: Excess amount being returned (must be positive)
-   - date: Business date — when excess was returned
-   - reference: External reference (wire transfer ID, etc.)
-   - user-id: User performing the operation
-   - note: Optional note
-
-   Returns: Transaction result map
-
-   Usage:
-     (record-excess-return conn contract-id 35000M #inst \"2024-01-15\"
-                           \"WT-001\" \"user-1\"
-                           :note \"Customer excess from reduced loan amount\")"
-  [conn contract-id amount date reference user-id & {:keys [note]}]
-  (when-not (pos? amount)
-    (throw (ex-info "Excess return amount must be positive"
-                    {:amount amount :error :non-positive-amount})))
-  (d/transact conn
-              {:tx-data [{:disbursement/id (random-uuid)
-                          :disbursement/type :excess-return
-                          :disbursement/amount amount
-                          :disbursement/date date
-                          :disbursement/contract [:contract/id contract-id]
-                          :disbursement/reference reference}
-                         (db/recording-metadata user-id :note note)]}))
+;;
+;; record-principal-allocation — replaced by waterfall derivation.
+;;   Fee settlement, deposit, and prepayment are now derived by the
+;;   waterfall from available = sum(inflows) - sum(outflows).
+;;
+;; record-excess-return — merged into record-refund with outflow component.
+;;   All money leaving the contract is an outflow (type :refund).
 
 ;; ============================================================
 ;; Document Operations

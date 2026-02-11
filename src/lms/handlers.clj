@@ -340,7 +340,7 @@
   "Handle POST /contracts/:id/retract-contract - retract a contract (data correction).
 
    Retracts the contract and ALL associated entities (fees, installments,
-   payments, disbursements, deposits, principal-allocations) atomically.
+   payments, disbursements, deposits, inflows, outflows) atomically.
    TX metadata records the correction reason and who performed it.
    Datomic history preserves all retracted datoms for forensics.
 
@@ -646,80 +646,86 @@
 (defn originate-handler
   "Handle POST /contracts/:id/originate — execute funding-day operations.
 
-   Records principal allocation (fee deduction from funding), deposit from
-   funding, merchant disbursement, and optional excess return via
-   boarding/originate.
+   Each origination step is a separate business fact, called individually.
+   Steps: funding inflow → borrower disbursement → deposit (optional) →
+   settlement (optional) → refund (optional) → set disbursed-at.
+
+   Fee settlement, deposit funding, and installment prepayment are NOT
+   explicit steps — the waterfall derives them from available funds.
 
    Form params:
    - date: origination date (YYYY-MM-DD) — required
-   - fee-deduction: amount allocated from principal to settle fees
-   - deposit-from-funding: amount deducted from principal for deposit
-   - disbursement-amount: amount wired to merchant — required
+   - disbursement-amount: amount wired to borrower — required
    - disbursement-reference: wire transfer reference — required
    - disbursement-iban: destination IBAN
    - disbursement-bank: destination bank
-   - excess-return: customer excess being returned
+   - deposit-from-funding: deposit amount deducted from principal
+   - refund-amount: excess returned to customer
 
-   Returns: Redirect to contract detail page with flash message"
+   Returns: SSE response updating contract page"
   [request]
   (try
     (let [contract-id-str (get-in request [:path-params :id])
           contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          conn (:conn request)
           params (:form-params request)
           get-param (fn [k] (let [v (get params k)]
                               (when-not (str/blank? v) v)))
-          normalize (fn [v] (if (string? v) [v] (vec v)))
           date-str (get-param "date")
           date (when date-str
                  (try (dates/->date (dates/parse-date date-str))
                       (catch Exception _ nil)))
-          ;; Parse per-fee settlement arrays
-          fee-ids (some-> (get params "settle-fee-id[]") normalize)
-          fee-amounts (some-> (get params "settle-fee-amount[]") normalize)
-          fee-settlements (when (and fee-ids fee-amounts)
-                            (->> (map vector fee-ids fee-amounts)
-                                 (remove (fn [[_ amt]] (str/blank? amt)))
-                                 (mapv (fn [[id-str amt-str]]
-                                         {:fee-id (parse-uuid id-str)
-                                          :amount (bigdec amt-str)}))))
-          deposit-from-funding (when-let [s (get-param "deposit-from-funding")]
-                                 (try (bigdec s) (catch Exception _ nil)))
-          installment-prepayment (when-let [s (get-param "installment-prepayment")]
-                                   (try (bigdec s) (catch Exception _ nil)))
           disbursement-amount (when-let [s (get-param "disbursement-amount")]
                                 (try (bigdec s) (catch Exception _ nil)))
           disbursement-reference (get-param "disbursement-reference")
           disbursement-iban (get-param "disbursement-iban")
           disbursement-bank (get-param "disbursement-bank")
-          excess-return (when-let [s (get-param "excess-return")]
-                          (try (bigdec s) (catch Exception _ nil)))]
+          deposit-from-funding (when-let [s (get-param "deposit-from-funding")]
+                                 (try (bigdec s) (catch Exception _ nil)))
+          refund-amount (when-let [s (get-param "refund-amount")]
+                          (try (bigdec s) (catch Exception _ nil)))
+          db (d/db conn)
+          contract (contract/get-contract db contract-id)
+          principal (:contract/principal contract)
+          steps (atom [])]
 
       (if (and contract-id date disbursement-amount disbursement-reference)
-        (let [origination-data (cond-> {:date date
-                                        :disbursement-amount disbursement-amount
-                                        :disbursement-reference disbursement-reference}
-                                 (seq fee-settlements) (assoc :fee-settlements fee-settlements)
-                                 deposit-from-funding (assoc :deposit-from-funding deposit-from-funding)
-                                 installment-prepayment (assoc :installment-prepayment installment-prepayment)
-                                 disbursement-iban (assoc :disbursement-iban disbursement-iban)
-                                 disbursement-bank (assoc :disbursement-bank disbursement-bank)
-                                 excess-return (assoc :excess-return excess-return))
-              result (boarding/originate (:conn request) contract-id origination-data "web-user")]
+        (do
+          ;; 1. Funding inflow — principal enters waterfall
+          (ops/record-funding-inflow conn contract-id principal date "web-user")
+          (swap! steps conj :funding-inflow)
 
-          (if (:success? result)
-            (do
-              (log/info "Contract originated via web" {:contract-id contract-id
-                                                       :steps (:steps result)})
-              (sse-ok request
-                      (contract-fragments (:conn request) contract-id
-                                          {:flash {:type :success
-                                                   :message (str "Contract originated. Steps: "
-                                                                 (str/join ", " (map name (:steps result))))}
-                                           :close-modal "showOriginationModal"})))
-            (do
-              (log/warn "Origination failed" {:contract-id contract-id
-                                              :error (:error result)})
-              (sse-error request (str "Origination failed: " (:error result))))))
+          ;; 2. Borrower disbursement (with outflow component)
+          (ops/record-disbursement conn contract-id disbursement-amount date
+                                   disbursement-reference "web-user"
+                                   :iban disbursement-iban
+                                   :bank disbursement-bank)
+          (swap! steps conj :borrower-disbursement)
+
+          ;; 3. Deposit from funding (optional — deposit ledger entity)
+          (when (and deposit-from-funding (pos? deposit-from-funding))
+            (ops/receive-deposit conn contract-id deposit-from-funding date "web-user"
+                                 :source :funding)
+            (swap! steps conj :deposit))
+
+          ;; 4. Refund (optional — excess returned to customer)
+          (when (and refund-amount (pos? refund-amount))
+            (ops/record-refund conn contract-id refund-amount date
+                               (str disbursement-reference "-REFUND") "web-user")
+            (swap! steps conj :refund))
+
+          ;; 5. Set disbursed-at + shift installment dates
+          (ops/set-disbursed-at conn contract-id date "web-user")
+          (swap! steps conj :disbursed-at)
+
+          (log/info "Contract originated via web" {:contract-id contract-id
+                                                   :steps @steps})
+          (sse-ok request
+                  (contract-fragments conn contract-id
+                                      {:flash {:type :success
+                                               :message (str "Contract originated. Steps: "
+                                                             (str/join ", " (map name @steps)))}
+                                       :close-modal "showOriginationModal"})))
 
         (do
           (log/warn "Invalid origination data" {:contract-id contract-id-str
@@ -735,31 +741,65 @@
 (defn retract-origination-handler
   "Handle POST /contracts/:id/retract-origination — retract origination entities.
 
-   Retracts all principal allocations, funding disbursements, deposits from
-   funding, and excess returns for a contract. Data correction operation.
+   Retracts all origination-created entities individually:
+   funding inflows, borrower disbursements, deposits from funding,
+   settlement outflows/inflows, refund disbursements, and unsets disbursed-at.
 
    Form params:
    - reason: correction reason keyword (correction, duplicate-removal, erroneous-entry)
    - note: optional free-text explanation
 
-   Returns: Redirect to contract detail page"
+   Returns: SSE response updating contract page"
   [request]
   (try
     (let [contract-id-str (get-in request [:path-params :id])
           contract-id (try (parse-uuid contract-id-str) (catch Exception _ nil))
+          conn (:conn request)
           reason-str (get-in request [:form-params "reason"])
           reason (when (and reason-str (not (str/blank? reason-str)))
                    (keyword reason-str))
-          note (get-in request [:form-params "note"])]
+          note (get-in request [:form-params "note"])
+          note-text (when-not (str/blank? note) note)]
 
       (if (and contract-id reason)
-        (do
-          (ops/retract-origination (:conn request) contract-id reason "web-user"
-                                   :note (when-not (str/blank? note) note))
+        (let [db (d/db conn)
+              inflows (contract/get-inflows db contract-id)
+              outflows (contract/get-outflows db contract-id)
+              disbursements (contract/get-disbursements db contract-id)
+              deposits (contract/get-deposits db contract-id)
+              steps (atom [])]
+
+          ;; Retract funding inflows
+          (doseq [i (filter #(= :funding (:inflow/source %)) inflows)]
+            (ops/retract-inflow conn (:inflow/id i) reason "web-user" :note note-text)
+            (swap! steps conj :retract-funding-inflow))
+
+          ;; Retract settlement outflows (also retracts inflow on old contract)
+          (doseq [o (filter #(= :settlement (:outflow/type %)) outflows)]
+            (ops/retract-settlement conn (:outflow/id o) "web-user" reason :note note-text)
+            (swap! steps conj :retract-settlement))
+
+          ;; Retract funding disbursements (component outflows cascade)
+          (doseq [d (filter #(#{:funding :refund} (:disbursement/type %)) disbursements)]
+            (ops/retract-disbursement conn (:disbursement/id d) reason "web-user" :note note-text)
+            (swap! steps conj :retract-disbursement))
+
+          ;; Retract funding deposits
+          (doseq [d (filter #(= :funding (:deposit/source %)) deposits)]
+            (ops/retract-deposit conn (:deposit/id d) reason "web-user" :note note-text)
+            (swap! steps conj :retract-deposit))
+
+          ;; Unset disbursed-at
+          (when (:contract/disbursed-at (d/pull (d/db conn) [:contract/disbursed-at]
+                                                [:contract/id contract-id]))
+            (ops/unset-disbursed-at conn contract-id "web-user" :note note-text)
+            (swap! steps conj :unset-disbursed-at))
+
           (log/info "Origination retracted" {:contract-id contract-id
-                                             :reason reason})
+                                             :reason reason
+                                             :steps @steps})
           (sse-ok request
-                  (contract-fragments (:conn request) contract-id
+                  (contract-fragments conn contract-id
                                       {:flash {:type :success :message "Origination retracted successfully."}
                                        :close-modal "showRetractOriginationModal"
                                        :sections #{:summary :fees :installments :origination-form}})))

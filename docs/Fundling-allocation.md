@@ -1,141 +1,82 @@
-## The Challenge
 
-At origination, a contract's principal disperses to multiple destinations: fee settlement, deposit collection, old loan payoff, merchant disbursement. The current system conflates principal with disbursement, losing visibility into where funds actually went.
+## The Insight
 
-The deeper problem: every proposed solution mixes two distinct concerns — **what crossed Alraedah's bank boundaries** versus **what entered or left a contract's accounting**. This conflation creates the design tension the original document struggled to resolve.
+Every previous iteration of this design asked the same question: **how should the system handle origination?** Outflows. Waterfall runs. Contract attributes. Snapshots. Each answer found a better home for origination within the system's architecture. Each was wrong — not in its conclusion, but in its question.
+
+The system doesn't handle origination. The system doesn't handle repayment. The system doesn't handle anything. The system stores facts from the world and answers questions about those facts. Everything in between is a pure function. There is nothing else.
 
 ---
 
 ## Diagnosis
 
-The system must answer two fundamentally different questions:
+The original design struggled because it tried to model origination as a **process** — something the system must execute, with inputs and outputs and state transitions. This created a cascade of design questions: Are fee deductions outflows or inflows? Should the waterfall run at origination? Where do allocation results live?
 
-1. **Bank reconciliation**: What money entered and left Alraedah's bank accounts?
-2. **Contract accounting**: What money entered and left each contract's waterfall?
+These questions dissolve once you recognize what the system actually does:
 
-These questions operate at different levels:
+1. **Facts arrive from the world.** A contract is signed. Money is received. Money is sent. A human decides which contract a payment applies to. A customer authorizes a deposit release.
 
-| Level | Boundary | Facts |
-|-------|----------|-------|
-| Alraedah | Company bank accounts | Wire transfers — auditable, external, real |
-| Contract | Contractual obligations | Allocations — internal accounting decisions |
+2. **Questions are asked.** What's the balance? Is this contract delinquent? What did the customer pay? What's the funding breakdown?
 
-The original document's three options (fee attribute, funding-payment, principal-allocation) all failed because they tried to solve a contract-level problem while entangled with Alraedah-level concepts. The word "payment" carried bank-level semantics into contract-level modeling. The result: every option either corrupted payment semantics or required dual-source enrichment.
+3. **Pure functions answer the questions.** Given these facts as of this point in time, here is the answer.
 
-**The kernel of the problem**: No clear separation between levels. Once you name something "payment," it inherits expectations about bank reconciliation. Once you call something "disbursement," it implies a wire transfer. The vocabulary itself creates the complection.
+There are no event handlers. No lifecycle phases. No processing pipelines. No state machines. The operations team has workflows. The finance team has a close process. The collection team has escalation rules. Those live in the business. The system is a quiet room full of facts, waiting for questions.
 
 ---
 
-## Bad Strategy: What to Avoid
+## Two Levels of Fact
 
-### Bad Strategy #1: Unified Primitives (Movement Model)
+The system must distinguish two boundaries, because the world has two boundaries:
 
-The movement model proposes one primitive — money moving between accounts — with perspectives derived through queries.
+| Level | Boundary | What crosses it |
+|-------|----------|-----------------|
+| **Alraedah** | Company bank accounts | Wire transfers — auditable, external, real |
+| **Contract** | Contractual obligations | Allocation decisions — human judgments about which contract gets what |
 
-**Why it's seductive**: One concept. Symmetric by construction. Matches double-entry bookkeeping.
+A customer sends 10,000. That's a fact at the Alraedah level: money arrived. Operations decides 6,000 goes to contract A and 4,000 to contract B. Those are facts at the contract level: humans decided where the money goes.
 
-**Why it fails**:
+The payment is one fact. The inflows are separate facts. No function can derive an inflow from a payment — a human made that decision. Both must be stored.
 
-- **Incidental complexity**: Accounts don't exist in signed contracts, customer communications, or operations vocabulary. They exist solely to make movements make sense. That's scaffolding to hold up scaffolding.
-- **Hidden differences**: Payments and disbursements have different attributes, different lifecycles, different regulations, different correction models. Forcing them into one primitive doesn't unify them — it hides the differences behind classification functions.
-- **Premature generality**: Solves problems we don't have (general ledger) while adding machinery to problems we do have (origination accounting).
-
-Rumelt would call this "mistaking goals for strategy." The goal (unified model) is not a strategy. A strategy must address why the current approach fails and what specific actions resolve it.
-
-### Bad Strategy #2: Payment with Channel Discriminator
-
-Option B proposed recording funding deductions as payments with `channel: "funding-deduction"`.
-
-**Why it's seductive**: Waterfall stays unchanged. One namespace. Familiar concept.
-
-**Why it fails**:
-
-- **Semantic corruption**: "Payment" means money received from outside. A funding deduction is internal. Calling it a payment with a channel flag is a lie that every downstream consumer must remember to filter.
-- **The auditor test**: "How much did the customer pay?" now requires filtering. Forget once, overstate collections.
-- **Vocabulary erosion**: Once "payment" can mean "not actually a payment," the term loses meaning. New team members can't trust the schema.
-
-This is fluff disguised as simplicity. The word "payment" is doing no work — the channel attribute carries all the meaning. You've hidden complexity in an attribute rather than eliminated it.
-
-### Bad Strategy #3: Fee Attributes for Settlement
-
-Option A proposed storing `fee/deducted-from-funding` on fee entities.
-
-**Why it's seductive**: No new namespaces. Fee "knows" how it was settled. Correction is localized.
-
-**Why it fails**:
-
-- **Complects charge with settlement**: A fee is what was charged. How it was settled is a different concern with different reasons to change.
-- **Dual-source enrichment**: Every consumer of fee status must combine waterfall allocation + deducted attribute. Forget once, fee shows partially paid.
-- **Breaks waterfall authority**: The waterfall says "20K paid." The attribute says "44.7K also paid." Authority is split.
-
-This is failure to face the challenge. The challenge is "how does the waterfall know fees are settled?" This answer says "don't use the waterfall for part of it." That's avoidance, not resolution.
+The same applies outward. A disbursement to a merchant is a fact at the Alraedah level. The outflow linking it to a contract is a fact at the contract level.
 
 ---
 
-## Good Strategy
+## What the System Stores
 
-### Guiding Policy
+Facts from the world, as they arrive, whenever they arrive:
 
-**Separate levels. Name things by what they are. Let each level own its own vocabulary.**
+**A contract was signed.** The contract contains its own terms: principal, fee amount, deposit amount, installment schedule, prepayment terms, merchant details, step-up rate structure. These are properties the contract was born with. The fee amount isn't "allocated at origination" — it's part of what the contract *is*.
 
-Two levels, two sets of concepts:
+**Money was received** (Alraedah level). A wire hit the bank account. Amount, sender, reference, effective date.
 
-| Level | Inbound | Outbound |
-|-------|---------|----------|
-| Alraedah (bank) | `payment/*` — wire received | `disbursement/*` — wire sent |
-| Contract (accounting) | `inflow/*` — money entering waterfall | `outflow/*` — money leaving waterfall |
+**Money was allocated inward** (contract level). Someone decided this payment — or part of it — applies to this contract. Amount, source, effective date. This is an **inflow**: a fact about a human decision, not a processing step.
 
-The link between levels is explicit: a payment owns its inflows as components — retract the payment, the inflows cascade. A disbursement owns its outflows as components. But not all inflows have payments and not all outflows have disbursements. Funding, deposit, and settlement events at the contract level exist independently.
+**Money was sent** (Alraedah level). A wire left the bank account. Amount, recipient, reference, effective date.
 
-**The waterfall treats all inflows uniformly.** It does not branch on source. It receives an amount and allocates to obligations by priority. Source is provenance metadata, not a branching condition.
+**Money was allocated outward** (contract level). This disbursement was for this contract. Amount, type, effective date. This is an **outflow**: a fact about where money went, not a processing step.
 
-### Why This Works
+**A document was authorized.** A customer signed a deposit release. A refinance was approved. An early settlement was agreed. These produce facts — new inflows, new outflows — that the world decided.
 
-**Payments stay pure.** Sum all payments = money received by Alraedah. Bank reconciliation works. Auditor gets correct answer. No filtering.
+**A snapshot was taken.** Finance closed the month. A statement was generated. A regulatory report was filed. These freeze computed state into immutable facts with legal or regulatory authority.
 
-**Disbursements stay pure.** Sum all disbursements = money sent by Alraedah. Bank reconciliation works. No semantic stretching.
+---
 
-**Inflows are contract-level.** The waterfall sees inflows. It doesn't care about source — it allocates to obligations by priority. Source is metadata, not identity.
+## What the System Computes
 
-**Outflows are contract-level.** Fee settlement, deposit collection, merchant disbursement, old loan settlement — all outflows from this contract's perspective. Type distinguishes them.
+Pure functions answer questions about facts. They have no side effects, no triggers, no lifecycle awareness. You can ask about now, about last Tuesday (via Datomic's `as-of`), or hypothetically with synthetic facts.
 
-**Refi becomes symmetric.** Settlement from new contract to old contract:
-- New contract: `outflow` with `:type :settlement`, `:target-contract old`
-- Old contract: `inflow` with `:source :settlement`, `:source-contract new`
+**What's the funding breakdown?** Read the contract terms. Fee amount, deposit amount, prepayment, settlement — they're properties, not computations. The merchant amount is `principal - fees - deposit - prepayment - settlement`. That's arithmetic over contract attributes, not a waterfall run.
 
-One transaction, two facts, each contract has a complete local view.
+**What's the obligation schedule?** A function of contract terms: principal, profit rate, tenure, step-up structure. Produces the installment schedule with amounts and due dates.
 
-**No reverse queries.** Funding breakdown queries this contract's outflows. Old loan settlement queries the inflow. Everything local.
+**What's the status of each obligation?** This is the waterfall — a lens over contract-level inflows, the obligation schedule, and time. Given everything that has flowed into this contract, how has it been allocated across obligations by priority? The waterfall doesn't "run" when a payment arrives. It runs when someone asks a question.
 
-### Proof: Deposit Release
+**Is this contract delinquent?** A lens over obligation status and the current date.
 
-A customer has paid down their loan to where the remaining balance equals the deposit amount. They sign a document authorizing Alraedah to apply the deposit to settle the loan.
+**What's the ECL staging?** A lens over the same facts with different optics.
 
-This creates an inflow:
+**What's the recognized profit?** A lens over inflows, obligations, and IFRS 9 rules.
 
-```clojure
-{:inflow/id       (uuid)
- :inflow/amount   deposit-amount
- :inflow/source   :deposit
- :inflow/contract contract-id}
-```
-
-No payment entity — no money crossed Alraedah's bank boundary. No disbursement — no wire was sent. The bank level sees nothing. The contract level sees money arriving at the waterfall from the deposit.
-
-The waterfall allocates this inflow identically to a customer payment or a funding inflow. It doesn't branch on source. It applies to whatever obligations remain — installments, fees, whatever the priority rules dictate.
-
-This scenario slots in without bending any existing concept. That's the test for a simple design: new scenarios don't require going back and changing anything.
-
-### Three inflow sources, one waterfall
-
-| Source | Trigger | Documented in | Bank boundary crossed? |
-|--------|---------|---------------|----------------------|
-| `:funding` | Origination | Contract | No (internal allocation) |
-| `:customer` | Repayment | Bank transfer | Yes (payment entity) |
-| `:deposit` | Early settlement authorization | Signed customer document | No (internal release) |
-| `:settlement` | Refinance from another contract | New contract | No (inter-contract) |
-
-The waterfall is a pure function of inflows and obligation schedule. Source is never a branching condition.
+The waterfall solves **scarcity**: a customer pays 5,000 against 20,000 in obligations, and priority rules determine who gets what. At origination, there is no scarcity to resolve — the contract terms already specify every amount. The waterfall's domain begins when the first uncertain event arrives: a customer payment where the algorithm has a genuine question to answer.
 
 ---
 
@@ -143,16 +84,12 @@ The waterfall is a pure function of inflows and obligation schedule. Source is n
 
 ### Time Model
 
-Every entity in Datomic gets `tx/instant` automatically — the system time when the fact was recorded. This is always available and never needs explicit attributes.
-
-Business dates represent **when the event is effective for accounting purposes**, which may differ from when it was recorded. A payment processed on Sunday but value-dated Friday has `tx/instant` on Sunday and `:payment/effective-date` on Friday. Origination outflows share the contract's funding date. A deposit release is effective on the date the customer authorized it.
-
-Business dates are explicit attributes. System time is free infrastructure.
+Every entity gets `tx/instant` automatically — system time when the fact was recorded. Business dates represent when the event is effective for accounting purposes. A payment processed Sunday but value-dated Friday has `tx/instant` on Sunday and `:payment/effective-date` on Friday.
 
 ### Alraedah Level (Bank Boundaries)
 
 ```clojure
-;; Money received from outside — a wire hit Alraedah's bank account
+;; Money received — a wire hit Alraedah's bank account
 {:db/ident       :payment/id
  :db/valueType   :db.type/uuid
  :db/unique      :db.unique/identity}
@@ -171,7 +108,7 @@ Business dates are explicit attributes. System time is free infrastructure.
  :db/isComponent true
  :db/doc         "Contract-level inflows caused by this payment. Retract payment, inflows cascade."}
 
-;; Money sent to outside — a wire left Alraedah's bank account
+;; Money sent — a wire left Alraedah's bank account
 {:db/ident       :disbursement/id
  :db/valueType   :db.type/uuid
  :db/unique      :db.unique/identity}
@@ -191,12 +128,12 @@ Business dates are explicit attributes. System time is free infrastructure.
  :db/doc         "Contract-level outflows caused by this disbursement. Retract disbursement, outflows cascade."}
 ```
 
-### Contract Level (Contractual Accounting)
+### Contract Level (Allocation Decisions)
 
 ```clojure
-;; Money entering this contract's waterfall
+;; Inflow: someone decided money applies to this contract
 ;; Customer inflows are components of payments (cascade on retraction).
-;; Funding, deposit, and settlement inflows exist independently — no bank-level parent.
+;; Funding, deposit, and settlement inflows exist independently.
 {:db/ident       :inflow/id
  :db/valueType   :db.type/uuid
  :db/unique      :db.unique/identity}
@@ -209,14 +146,14 @@ Business dates are explicit attributes. System time is free infrastructure.
  :db/valueType   :db.type/ref}
 {:db/ident       :inflow/source
  :db/valueType   :db.type/keyword
- :db/doc         "Origin of funds entering the waterfall"}
+ :db/doc         "Origin: :customer, :funding, :deposit, :settlement"}
 {:db/ident       :inflow/source-contract
  :db/valueType   :db.type/ref
- :db/doc         "Link to source contract when source is :settlement"}
+ :db/doc         "Source contract when source is :settlement"}
 
-;; Money leaving this contract's waterfall
+;; Outflow: money left this contract to an external party
 ;; Merchant outflows are components of disbursements (cascade on retraction).
-;; Fee, deposit, and settlement outflows exist independently — no bank-level parent.
+;; Settlement outflows exist independently.
 {:db/ident       :outflow/id
  :db/valueType   :db.type/uuid
  :db/unique      :db.unique/identity}
@@ -229,15 +166,19 @@ Business dates are explicit attributes. System time is free infrastructure.
  :db/valueType   :db.type/ref}
 {:db/ident       :outflow/type
  :db/valueType   :db.type/keyword
- :db/doc         "What this outflow represents: :fee, :deposit, :settlement, :merchant, :excess-return"}
+ :db/doc         "What this outflow represents: :merchant, :settlement, :excess-return"}
 {:db/ident       :outflow/target-contract
  :db/valueType   :db.type/ref
- :db/doc         "Link to target contract when type is :settlement"}
+ :db/doc         "Target contract when type is :settlement"}
 ```
 
-### Component Relationships
+### What Changed from the Original Schema
 
-Not all inflows have bank-level parents. Not all outflows have bank-level parents. The component relationship applies only where a bank boundary crossing caused the contract-level event:
+Outflow types shrank. `:fee`, `:deposit`, and `:prepayment` are gone. Fees, deposits, and prepaid installments are **contract terms** — properties the contract was born with. They aren't money leaving the contract. They're the contract describing how its principal is structured.
+
+Outflows now mean one thing: **money that left this contract to an external party.** Merchant disbursement. Settlement to another contract. Excess returned to the customer. That's it.
+
+### Component Relationships
 
 | Entity | Bank parent | Component? |
 |--------|-------------|------------|
@@ -246,233 +187,195 @@ Not all inflows have bank-level parents. Not all outflows have bank-level parent
 | Inflow `:deposit` | None | Independent — authorized by signed document |
 | Inflow `:settlement` | None | Independent — caused by another contract |
 | Outflow `:merchant` | Disbursement | Yes — retract disbursement, outflow cascades |
-| Outflow `:fee` | None | Independent — internal allocation |
-| Outflow `:deposit` | None | Independent — internal allocation |
 | Outflow `:settlement` | None | Independent — inter-contract allocation |
+| Outflow `:excess-return` | Disbursement | Yes — money returned to customer |
 
 ---
 
-## Origination Flow
+## Origination: Not an Event
 
-Origination happens in two stages. Before signing, the funding breakdown is computed to generate the contract document. After signing, the actual facts are recorded. No entities are created before signing — a plan is a computation, not a fact.
+Origination isn't something that happens to a contract. Origination is the contract coming into existence.
 
-### Stage 1: Compute for Contract Generation
+Two things happen in the world. Exactly two:
 
-A pure function computes the funding breakdown from contract terms. This produces the numbers printed in the contract document. No database writes.
+1. **The signed contract enters the system** — an external fact containing its own terms.
+2. **Money goes to the merchant** — a disbursement crossing Alraedah's bank boundary, with an outflow linking it to the contract.
+
+There is nothing else to process. The fee amount is in the contract. The deposit amount is in the contract. The prepayment terms are in the contract. These are properties, not events. They don't need to be flowed, allocated, or snapshotted. They need to be **read**.
+
+### The Funding Breakdown Is Not a Waterfall Run
+
+Before signing, the LOS computes a funding breakdown from contract terms to generate the contract document. This is a pure function:
 
 ```clojure
 (defn compute-funding-breakdown [contract-terms]
-  (let [principal         (:principal contract-terms)
-        fee-amount        (:fee-amount contract-terms)
-        deposit-amount    (:deposit-amount contract-terms)
-        settlement-amount (:settlement-amount contract-terms 0)
-        merchant-amount   (- principal fee-amount deposit-amount settlement-amount)]
-    {:principal         principal
-     :to-fees           fee-amount
-     :to-deposit        deposit-amount
-     :to-settlement     settlement-amount
-     :to-merchant       merchant-amount}))
+  (let [{:keys [principal fee-amount deposit-amount
+                settlement-amount prepayment-amount]} contract-terms
+        merchant-amount (- principal fee-amount deposit-amount
+                           settlement-amount prepayment-amount)]
+    {:principal    principal
+     :to-fees      fee-amount
+     :to-deposit   deposit-amount
+     :to-settlement settlement-amount
+     :to-prepayment prepayment-amount
+     :to-merchant  merchant-amount}))
 ```
 
-This function lives in the shared computation library. It is used by:
-- Contract generation (LOS) — to print correct values in the contract document
-- Analytics — for what-if scenarios and simulations
-- Validation — to verify execution matches the signed contract
+This function is arithmetic over contract attributes. It is used by the LOS to print the contract document. After signing, the contract carries these values as terms. The system reads them. The function exists for validation and contract generation — not as a system process.
 
-### Stage 2: Execute After Signing
+### What Gets Recorded
 
-After the customer signs, the signed contract document is the source of truth for execution. The values come from the signed contract — not recomputed from terms that might have changed between generation and signing.
+After signing, the system records facts:
 
 ```clojure
-(defn execute-funding [db signed-contract]
-  (let [{:keys [principal fee-amount deposit-amount
-                settlement-amount merchant-amount]} (:contract/funding-breakdown signed-contract)
-
-        effective       (:contract/funding-date signed-contract)
-        contract-id     (:contract/id signed-contract)
-        disbursement-id (uuid)]
+(defn record-origination-facts [signed-contract]
+  (let [{:keys [contract-id funding-date merchant-name
+                wire-reference]} signed-contract
+        merchant-amount (compute-merchant-amount signed-contract)]
 
     (cond->
-      [;; Bank level: wire to merchant, with outflow as component
-       {:disbursement/id             disbursement-id
-        :disbursement/amount         merchant-amount
-        :disbursement/effective-date effective
-        :disbursement/recipient      (:contract/merchant-name signed-contract)
-        :disbursement/reference      (:wire-reference signed-contract)
-        :disbursement/outflows
-        [{:outflow/id             (uuid)
-          :outflow/amount         merchant-amount
-          :outflow/effective-date effective
-          :outflow/type           :merchant
-          :outflow/contract       contract-id}]}
-
-       ;; Contract level: principal enters the waterfall (independent — no bank parent)
+      [;; Fact: money enters this contract (funding)
        {:inflow/id             (uuid)
-        :inflow/amount         principal
-        :inflow/effective-date effective
+        :inflow/amount         (:principal signed-contract)
+        :inflow/effective-date funding-date
         :inflow/source         :funding
         :inflow/contract       contract-id}
 
-       ;; Contract level: fees settled from funding (independent)
-       {:outflow/id             (uuid)
-        :outflow/amount         fee-amount
-        :outflow/effective-date effective
-        :outflow/type           :fee
-        :outflow/contract       contract-id}
+       ;; Fact: money was sent to merchant (bank level + contract level)
+       {:disbursement/id             (uuid)
+        :disbursement/amount         merchant-amount
+        :disbursement/effective-date funding-date
+        :disbursement/recipient      merchant-name
+        :disbursement/reference      wire-reference
+        :disbursement/outflows
+        [{:outflow/id             (uuid)
+          :outflow/amount         merchant-amount
+          :outflow/effective-date funding-date
+          :outflow/type           :merchant
+          :outflow/contract       contract-id}]}]
 
-       ;; Contract level: deposit collected (independent)
-       {:outflow/id             (uuid)
-        :outflow/amount         deposit-amount
-        :outflow/effective-date effective
-        :outflow/type           :deposit
-        :outflow/contract       contract-id}]
-
-      ;; Refinance: settlement (conditional)
+      ;; Refinance: settlement facts on both contracts
       (:old-contract-id signed-contract)
       (into
-        [;; This contract: money leaves to settle old contract (independent)
-         {:outflow/id              (uuid)
-          :outflow/amount          settlement-amount
-          :outflow/effective-date  effective
+        [{:outflow/id              (uuid)
+          :outflow/amount          (:settlement-amount signed-contract)
+          :outflow/effective-date  funding-date
           :outflow/type            :settlement
           :outflow/contract        contract-id
           :outflow/target-contract (:old-contract-id signed-contract)}
 
-         ;; Old contract: money arrives from new contract (independent)
          {:inflow/id              (uuid)
-          :inflow/amount          settlement-amount
-          :inflow/effective-date  effective
+          :inflow/amount          (:settlement-amount signed-contract)
+          :inflow/effective-date  funding-date
           :inflow/source          :settlement
           :inflow/contract        (:old-contract-id signed-contract)
           :inflow/source-contract contract-id}]))))
 ```
 
-### The Two-Stage Pattern
-
-```
-contract terms ──→ compute-funding-breakdown (pure function, shared library)
-                         │
-                         ▼
-                   generate contract document (values printed for customer)
-                         │
-                         ▼
-                   customer signs ──→ signed contract (fact, stored in Datomic)
-                         │
-                         ▼
-                   execute-funding (creates inflows, outflows, disbursement)
-                         uses values FROM the signed contract
-```
-
-The signed contract is the source of truth for execution. If terms changed between generation and signing (fee adjustment, updated settlement balance on old loan), the contract would be regenerated before signing. Once signed, execution uses exactly what the customer agreed to. The computation function is called once for generation; the signed document carries the values forward.
+No outflows for fees, deposits, or prepayments. No waterfall run. No conservation invariant to check at execution time — the contract wouldn't have been generated if the numbers didn't add up.
 
 ### The Conservation Invariant
 
-At origination, the books balance:
+At origination, the books balance by construction:
 
 ```
-inflow(funding) = outflow(fee) + outflow(deposit) + outflow(settlement) + outflow(merchant)
+principal = fee-amount + deposit-amount + prepayment-amount + settlement-amount + merchant-amount
 ```
 
-Principal in, everything out. Zero residual. This is an assertable invariant — if it doesn't hold, something is wrong.
-
-Over the life of the contract, the invariant evolves:
-
-```
-sum(all inflows) >= sum(all waterfall allocations)
-```
-
-The contract closes when obligations reach zero. Inflows accumulate from funding, customer payments, deposit releases, and settlement receipts. The waterfall allocates each one as it arrives according to the same priority rules regardless of source.
+This is verified at contract generation time, before the customer signs. It's a precondition on the contract terms, not a runtime assertion. The signed contract carries the proof.
 
 ---
 
-## Waterfall
+## The Waterfall: A Lens, Not a Mechanism
 
-The waterfall is a pure function of inflows and obligation schedule. It does not branch on source.
+The waterfall is a pure function that answers a question:
+
+*Given this contract's terms and all inflows up to this point in time, what is the status of each obligation?*
+
+It doesn't "run" when a payment arrives. It runs when someone asks. The payment is a fact. The question comes later — maybe immediately, maybe at month-end, maybe never for some contracts.
 
 ```clojure
-(defn compute-waterfall [db contract-id]
-  (let [inflows  (query-inflows db contract-id)
-        outflows (query-outflows db contract-id)]
-    {:total-in  (sum :inflow/amount inflows)
-     :total-out (sum :outflow/amount outflows)
-     :available (- (sum :inflow/amount inflows)
-                   (sum :outflow/amount outflows))}))
+(defn obligation-status [db contract-id as-of-date]
+  (let [contract    (pull-contract db contract-id)
+        schedule    (compute-schedule contract)
+        inflows     (query-inflows db contract-id as-of-date)
+        outflows    (query-outflows db contract-id as-of-date)]
+    (allocate-to-obligations schedule inflows outflows as-of-date)))
 ```
 
-During origination, available is zero — everything was allocated. During repayment, customer payments create inflows that the waterfall allocates to installment obligations. At early settlement, a deposit release creates an inflow allocated to whatever remains.
+The waterfall sees inflows. It doesn't care about source. A customer payment, a funding inflow, a deposit release, a settlement receipt — all are inflows. The algorithm allocates to obligations by priority. Source is provenance metadata, not a branching condition.
+
+At origination, the funding inflow enters and the waterfall allocates it to obligations. Fees are satisfied first (highest priority). Then deposit. Then prepaid installments if applicable. Whatever remains is available for future installments — but we already know that residual equals the merchant amount because the contract terms guarantee it. The waterfall confirms what the contract already says. This is validation, not discovery.
+
+During repayment, the waterfall does real work. A customer pays 5,000 against 20,000 in obligations. Priority rules resolve the scarcity. Different rules would produce different results. That's genuine computation.
+
+The waterfall doesn't know the difference. Same function, same code path. The distinction between "predetermined" and "uncertain" is a property of the inputs, not the mechanism.
+
+### Three Inflow Sources, One Lens
+
+| Source | Trigger | Bank boundary crossed? |
+|--------|---------|----------------------|
+| `:funding` | Origination | No (internal — principal enters contract) |
+| `:customer` | Repayment | Yes (payment entity as parent) |
+| `:deposit` | Early settlement authorization | No (internal release) |
+| `:settlement` | Refinance from another contract | No (inter-contract) |
 
 ---
 
-## Computation, Snapshots, and Corrections
+## Snapshots and Corrections
 
 ### Why Allocations Are Not Stored
 
-When the waterfall allocates an inflow — 3,200 to principal, 1,800 to profit — the question arises: should we store the allocation result?
+When the waterfall allocates an inflow — 3,200 to principal, 1,800 to profit — the result is not stored. The allocation is deterministic given three inputs: the inflow amount, the obligation schedule, and the algorithm. Storing creates a second source of truth. Correcting requires reversing the inflow *and* every allocation record. If allocations are computed, reverse the inflow and the waterfall naturally recalculates.
 
-No. The allocation is deterministic given three inputs: the inflow amount, the obligation schedule at that point in time, and the algorithm. Storing the result creates a second source of truth that can diverge from recomputation. Correcting a stored allocation (e.g., reversing a bounced payment) requires reversing the inflow *and* every allocation record it produced. If allocations are computed, you reverse the inflow and the waterfall naturally recalculates.
+### When Computation Crystallizes
 
-The waterfall algorithm is the authority. If there's ever a question about what should have happened, recompute from the algorithm, the inflow, and the schedule as-of (available through Datomic's time-travel queries). The algorithm is a pure function — same inputs always produce the same outputs.
+Computed results become facts at specific business moments — when they are communicated with legal or regulatory authority. At these moments, the computation result has standing independent of the function that produced it.
 
-### When Computation Crystallizes: Snapshots
-
-Computation results become facts at specific business moments — when they are communicated with legal or regulatory authority. A customer statement, a SAMA report, a merchant settlement notice. At these moments, the computation result has contractual standing independent of the function that produced it.
-
-Rather than storing every allocation, the system takes **snapshots** at business-meaningful boundaries:
+The system takes snapshots at business-meaningful boundaries:
 
 - **Month-end close**: finance requests a snapshot of each contract's state
-- **Statement generation**: the customer's statement captures balances, payments, allocations
+- **Statement generation**: captures balances, payments, allocations for the customer
 - **Regulatory reporting**: SAMA/IFRS submissions capture portfolio state
 - **Quarter-end close**: financial books close with authoritative figures
 
-A snapshot is a new entity in its own namespace, containing the complete computed state at that moment — the same pattern used for contractual documents. The waterfall computes, the result is saved as an immutable fact under a document namespace, and that snapshot becomes the authoritative record of what was communicated or reported.
+A snapshot is a new entity containing the complete computed state at that moment. Between snapshots, the system has one source of truth: facts plus functions.
 
-Between snapshots, the system has one source of truth: facts plus the algorithm. Recomputation is free, corrections are simple, and the waterfall function can be updated without migrating stored state.
+Note: the signed contract is **not** a snapshot. A snapshot is what the system produces — waterfall output frozen at a business moment. The signed contract is what the world produces — an agreement between parties. The system serves the contract, not the other way around.
 
 ### Correction Policies
 
-When facts change after a snapshot — a late-arriving payment, a bug fix, a data correction — the recomputed state may differ from the last snapshot. This variance is surfaced, not suppressed. Different consumers handle the variance differently:
+When facts change after a snapshot, the recomputed state may differ. This variance is surfaced, not suppressed:
 
 **Finance (quarterly)**: the snapshot is the closed book. Corrections flow into the next quarter as adjustments. The original snapshot is never modified.
 
-**Merchant statements**: corrections trigger a new statement referencing the original, reflecting the business date of the corrected event. The original statement remains as-is.
+**Customer statements**: corrections trigger a new statement referencing the original.
 
-In both cases: the original snapshot is immutable, the correction is a new fact that references the old snapshot, and the waterfall's recomputed state shows the "true" current position. The delta between recomputation and the last snapshot is the variance that drives correction actions.
+Three things:
 
-Three things, not two:
+1. **The lens** — always computes current truth from facts
+2. **Snapshots** — periodic photographs of the lens output, tied to business moments
+3. **Corrections** — new documents referencing a prior snapshot, explaining the delta
 
-1. **The waterfall** — always computes current truth from facts
-2. **Snapshots** — periodic photographs of waterfall output, tied to business moments
-3. **Corrections** — new documents that reference a prior snapshot and explain the delta
-
-The correction policy is per-consumer, not per-contract. The same variance triggers different actions for different consumers.
-
-### Reconciliation via Snapshots
-
-Snapshots serve as reconciliation checkpoints. When anything changes in the system — a bug fix in the waterfall algorithm, a late payment recorded retroactively, a data correction — the system can recompute using Datomic's `as-of` queries and diff against the relevant snapshot.
-
-If the recomputed result matches the snapshot: nothing to do. If it differs: a variance exists that needs review. The snapshot tells you what was *communicated*. The recomputation tells you what *should have been*. The delta is a business decision — correct forward, issue an amendment, or accept the variance.
+The correction policy is per-consumer, not per-contract.
 
 ---
 
-## Readers and Analytics
+## Readers
 
-### The Core System's Boundary
+The core system stores facts and answers questions. It does not maintain materialized views or pre-computed aggregations.
 
-The core system stores facts and computes state on demand. It does not maintain materialized views, denormalized tables, or pre-computed aggregations for downstream consumers. Analytics, dashboards, and reporting are separate readers with their own pipelines, their own performance requirements, and their own data shapes. They are not a concern of this system.
+| Reader | Reads | Asks |
+|--------|-------|------|
+| **Operations** | Facts | "What's the state of this contract right now?" |
+| **Finance** | Snapshots | "What was the authoritative state at month-end?" |
+| **Analytics** | Facts + snapshots | "What are the trends across the portfolio?" |
 
-### Three Readers
-
-| Reader | Reads | Needs | Latency |
-|--------|-------|-------|---------|
-| **Operations** | Facts + live computation | Current state of any contract | Real-time (derive on read) |
-| **Finance/Reporting** | Snapshots | Authoritative state at business moments | Periodic (month-end, quarter-end) |
-| **Analytics** | Facts + snapshots | Aggregations, trends, portfolio metrics | Near-real-time to batch |
-
-Operations calls the waterfall function directly — it needs the live answer for this contract right now. Finance consumes snapshots — they need the closed-book answer. Analytics reads whatever serves its purpose — raw facts for trend analysis, snapshots for portfolio reporting.
+Operations calls the lens directly. Finance reads snapshots. Analytics builds its own read models from the transaction log and snapshots using the same shared computation library.
 
 ### Shared Computation Library
 
-The waterfall function, loan status function, ECL staging, profit recognition — these are pure functions in a shared library. They take facts as input and return results. They have no side effects, no database writes, no awareness of who is calling them.
+The waterfall, loan status, ECL staging, profit recognition — these are pure functions in a shared library. Same code in the LMS service and the analytics pipeline. Alignment by construction.
 
 ```
 core-lib/
@@ -480,6 +383,7 @@ core-lib/
   loan-status.clj        ;; facts → status
   ecl.clj                ;; facts → staging + provision
   profit-recognition.clj ;; facts → recognized profit
+  funding.clj            ;; contract terms → breakdown (validation/generation)
 
 lms-service/
   depends on core-lib
@@ -487,99 +391,83 @@ lms-service/
   serves operations
 
 analytics-pipeline/
-  depends on core-lib    ;; same functions, same artifact
+  depends on core-lib
   reads Datomic tx log or snapshots
   writes to data warehouse
 ```
-
-The analytics pipeline uses the same waterfall function as the LMS. Same code, same version, same result. Alignment is guaranteed by construction, not by reconciliation.
-
-If real-time or near-real-time analytics is needed, the pipeline subscribes to Datomic's transaction log and triggers computation on relevant events. If batch is sufficient, the pipeline reads facts periodically and recomputes. Either way, the core system is unaware.
-
-### Schema Discipline
-
-The core system's schema is designed for operational and regulatory correctness — not for query convenience of downstream analytics. No denormalized attributes for dashboard performance. No materialized views maintained for reporting. No schema changes driven by analytics requirements. Analytics builds its own read models from the transaction log and snapshots.
-
-Snapshots reduce the analytics burden significantly: a pipeline that needs "principal balance outstanding on January 31st" reads the January snapshot directly, without replaying the waterfall for every contract. The domain intelligence stays in the core library; the analytics pipeline reshapes and aggregates without understanding allocation rules.
 
 ---
 
 ## Queries
 
-Every question has one obvious query at one level.
+Every question has one obvious answer path.
 
 **How much did the customer pay?** Query payments (Alraedah level). No filtering.
 
 **How much was disbursed?** Query disbursements (Alraedah level). No filtering.
 
-**What's the funding breakdown?** Query this contract's outflows at origination:
-
-```clojure
-(defn funding-breakdown [db contract-id]
-  (let [outflows (query-outflows-by-date db contract-id funding-date)]
-    {:principal   (:contract/principal contract)
-     :to-fees     (sum-by-type outflows :fee)
-     :to-deposit  (sum-by-type outflows :deposit)
-     :to-settlement (sum-by-type outflows :settlement)
-     :to-merchant (sum-by-type outflows :merchant)}))
-```
+**What's the funding breakdown?** Read the contract terms. Compute merchant amount as the residual.
 
 **What settled the old loan?** Query the old contract's inflows with `:source :settlement`.
 
-**What's the deposit status?** Query outflows of type `:deposit` (money collected) and inflows with `:source :deposit` (money released back).
+**What's the deposit status?** Contract terms show deposit collected. Query inflows with `:source :deposit` for any release.
+
+**What's the balance on this contract?** Ask the waterfall lens with today's date.
+
+**What was the balance on January 31st?** Ask the waterfall lens with Datomic's `as-of` January 31st. Or read the January snapshot.
+
+**Why did this installment get 3,200?** Ask the waterfall lens — it computed the allocation based on priority rules.
+
+**Why is the fee amount 100K?** Read the contract. The contract says so.
 
 ---
 
 ## Comparison: Before and After
 
-| Concern | Original Options | This Strategy |
-|---------|------------------|---------------|
-| Fee settlement visibility | Dual-source or semantic corruption | Outflow with `:type :fee` at origination |
-| Refi settlement | Reverse query via `tx/source-contract` | Symmetric inflow/outflow pair |
-| Bank reconciliation | Mixed with contract accounting | Separate level: `payment/*`, `disbursement/*` |
-| Waterfall sources | 4 namespaces to compose | 1 namespace: `inflow/*`, source-agnostic |
-| "Total customer payments" | Filter required | Query payments (Alraedah level) |
-| Funding breakdown | Cross-namespace queries | Local: outflows on funding date |
-| Deposit release | Not addressed | Inflow with `:source :deposit`, no schema change |
-| New money source | New namespace + waterfall change | New `:source` keyword value |
-| System vs business time | Ambiguous date attributes | `tx/instant` for system time, `/effective-date` for business date |
-| Allocation storage | Store every result (parallel ledger) | Compute on demand, snapshot at business moments |
-| Corrections | Reverse stored allocations | Reverse inflow, recompute, diff against snapshot |
-| Analytics | Entangled with core schema | Separate reader, shared computation library |
-| Regulatory reporting | Query live state | Query snapshots (authoritative, closed-book) |
-| Level coupling | Inflow references payment (upward) | Payment owns inflow as component (downward cascade) |
-| Payment retraction | Manual cleanup of related entities | Component cascade — retract payment, inflows retract automatically |
-| Origination timing | All entities created at once | Two stages: compute for contract, execute after signing |
+| Concern | Original Design | This Design |
+|---------|----------------|-------------|
+| Fee settlement | Outflow entity at origination | Contract term — read it |
+| Deposit collection | Outflow entity at origination | Contract term — read it |
+| Prepayment | Not addressed, then outflow | Contract term — read it |
+| Merchant disbursement | Outflow + disbursement | Same — real money left |
+| Refi settlement | Symmetric inflow/outflow pair | Same — real inter-contract movement |
+| Funding breakdown | Query outflows on funding date | Read contract terms |
+| Waterfall at origination | Debated: run or don't run | Lens works, but answers are predetermined by terms |
+| Bank reconciliation | Separate level | Same |
+| "Total customer payments" | Query payments | Same |
+| New origination obligation | New outflow type | New contract term |
+| Deposit release | Inflow with `:source :deposit` | Same |
+| Origination as concept | Event to be handled | Facts to be recorded — contract + disbursement |
+| System lifecycle | Phases: origination → repayment → settlement | None — facts arrive, questions are asked |
+| Allocation storage | Debated: store vs. compute | Compute on demand, snapshot at business moments |
 
 ---
 
-## What This Strategy Does Not Do
+## What This Design Does Not Do
 
-It does not eliminate all complexity. Origination still creates multiple entities. Refi still requires a two-sided record. Corrections still require understanding which level to correct. Snapshot timing is a business decision that must be coordinated with finance and operations.
+It does not eliminate business complexity. The operations team still has origination workflows. The finance team still has close processes. The collection team still has escalation rules. Those complexities are real and live in the business — not in the system.
 
-It does not solve GL integration. SAMA and IFRS 9 require journal entries that this model does not produce directly. Journal entry generation is a derivation from contract-level facts — a pure function from inflows, outflows, and snapshots to debit/credit pairs. This function belongs in the shared computation library, not in the core schema.
+It does not solve GL integration. Journal entries are a derivation from facts — a pure function in the shared computation library.
 
-It does not guarantee analytics performance. The compute-on-demand model means portfolio-level queries require either running the waterfall across many contracts or reading snapshots. The shared computation library ensures correctness; the analytics pipeline is responsible for its own performance through caching, pre-computation, and data warehouse design.
+It does not guarantee analytics performance. Compute-on-demand means portfolio queries require running the lens across many contracts or reading snapshots. The analytics pipeline handles its own performance.
 
-But the complexity is **placed correctly**. Bank-level facts live in bank-level entities. Contract-level facts live in contract-level entities. Derived state lives in pure functions. Communicated state lives in snapshots. Analytics lives outside the boundary. The vocabulary is honest. Queries match questions. Each level can be understood independently. New scenarios — like deposit release — slot in without bending existing concepts.
-
-That's what good strategy does: it doesn't make problems disappear. It clarifies where problems live so you can solve them in the right place.
+But the system is simple. Facts go in. Questions come out. Everything in between is a pure function. Origination isn't a phase. Repayment isn't a phase. They're human narratives about sequences of facts. The system doesn't know about them.
 
 ---
 
 ## Decision
 
-Adopt the two-level model with compute-on-demand, periodic snapshots, and two-stage origination:
+Adopt the facts-and-lenses model:
 
-- **Alraedah level**: `payment/*` and `disbursement/*` for bank boundary crossings
-- **Contract level**: `inflow/*` and `outflow/*` for contractual accounting
-- **Component ownership**: payments own customer inflows, disbursements own merchant outflows — retraction cascades automatically. Funding, deposit, and settlement entities at the contract level exist independently with no bank-level parent.
-- **Waterfall**: source-agnostic pure function over inflows and obligations, never stores allocation results
-- **Two-stage origination**: compute funding breakdown for contract generation (pure function, no writes), execute after signing using values from the signed contract (creates all entities)
-- **Time model**: `tx/instant` for system time (free), `/effective-date` for business dates (explicit)
-- **Outflow types**: `:fee`, `:deposit`, `:settlement`, `:merchant`, `:excess-return` — each meaning one thing
-- **Snapshots**: computation crystallizes into immutable facts at business moments (month-end, statements, regulatory reports), stored under document namespaces
-- **Corrections**: new facts referencing prior snapshots, with per-consumer correction policies (next-quarter for finance, correcting statement for merchants)
-- **Analytics**: separate reader, not a concern of the core system — pipelines build their own read models from the transaction log and snapshots, using the same shared computation library as the LMS
+- **Alraedah level**: `payment/*` and `disbursement/*` for bank boundary crossings — facts about money moving in the world
+- **Contract level**: `inflow/*` and `outflow/*` for allocation decisions — facts about where money goes, decided by humans
+- **Contract terms**: fees, deposits, prepayments are properties of the signed contract — read, not processed
+- **Outflows mean money leaving**: `:merchant`, `:settlement`, `:excess-return` only — no outflows for fees, deposits, or prepayments
+- **The waterfall is a lens**: pure function over inflows and obligations, asked on demand, never triggered
+- **Component ownership**: payments own customer inflows, disbursements own merchant outflows — retraction cascades
+- **Snapshots**: computation crystallizes at business moments into immutable facts; the signed contract is not a snapshot — it's the world's fact
+- **Corrections**: new facts referencing prior snapshots, per-consumer policies
+- **Time model**: `tx/instant` for system time, `/effective-date` for business dates
+- **Analytics**: separate reader, shared computation library, not a concern of the core system
 
-The cost is vocabulary change and discipline: teams must learn "inflow" and "outflow" as contract-level terms, trust computation over stored state between snapshots, and resist the temptation to add schema for analytics convenience. The benefit is a model where every question has one obvious query, every fact lives at one level, no concept is stretched beyond its meaning, corrections are simple because derived state is never stored — only communicated state is, and no entities exist before signing because plans are computations, not facts.
+The cost is discipline: teams must understand that the system has no lifecycle, only facts and questions. The benefit is a system where every question has one obvious answer, every fact lives at one level, and no machinery exists where no machinery is needed.

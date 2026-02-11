@@ -3,9 +3,10 @@
 
    PURE FUNCTION. No database dependencies, no side effects.
 
-   The waterfall defines how customer payments are allocated:
-   1. Fees (by due-date, oldest first)
-   2. Installments (by seq, earliest first)
+   The waterfall defines how available funds are allocated by priority:
+   1. Deposit (highest priority) — fund security deposit obligation
+   2. Fees (by due-date, oldest first)
+   3. Installments (by due-date, earliest first)
       - Within each installment: profit before principal
 
    This is the core business rule of the system. Everything else
@@ -51,8 +52,12 @@
    2. Fees before installments on same due-date (stable sort)
    3. Within installment: profit-due before principal-due
 
-   Any remaining amount after all fees and installments are paid becomes
+   Any remaining amount after all obligations are paid becomes
    credit-balance (overpayment).
+
+   Optional keyword args:
+   - :deposit-due  bigdec — outstanding deposit obligation to fund.
+                   Defaults to 0M. Deposit is allocated before fees and installments.
 
    Examples:
 
@@ -65,24 +70,21 @@
    => {:allocations [{:type :fee :id fee1-id :amount 1000M}
                      {:type :installment :id inst1-id :seq 1
                       :profit-paid 10000M :principal-paid 39000M}]
+       :deposit-allocated 0M
        :credit-balance 0M}
 
-   ;; Fee due AFTER installment - installment paid first!
-   (waterfall
-     [{:fee/id fee1-id :fee/amount 1000M :fee/due-date #inst \"2024-03-01\"}]
-     [{:installment/id inst1-id :installment/seq 1 :installment/due-date #inst \"2024-02-01\"
-       :installment/principal-due 100000M :installment/profit-due 10000M}]
-     50000M)
-   => {:allocations [{:type :installment :id inst1-id :seq 1
-                      :profit-paid 10000M :principal-paid 40000M}
-                     {:type :fee :id fee1-id :amount 0M}]
-       :credit-balance 0M}
-   ;; Installment paid first because it's due before the fee!"
+   ;; With deposit obligation
+   (waterfall fees installments 210000M :deposit-due 60000M)
+   ;; => deposit 60K allocated first, then fees, then installments"
 
-  [fees installments total-payments]
+  [fees installments total-payments & {:keys [deposit-due] :or {deposit-due 0M}}]
 
-  ;; Tag items with their type for processing
-  (let [tagged-fees (map #(assoc % :_type :fee) fees)
+  (let [;; ── Deposit allocation (highest priority) ──
+        deposit-allocated (min total-payments (max 0M deposit-due))
+        remaining-after-deposit (- total-payments deposit-allocated)
+
+        ;; Tag items with their type for processing
+        tagged-fees (map #(assoc % :_type :fee) fees)
         tagged-installments (map #(assoc % :_type :installment) installments)
 
         ;; Merge and sort ALL items by due-date
@@ -93,44 +95,45 @@
         {final-allocations :allocations
          final-remaining :remaining}
         (reduce
-          (fn [{:keys [allocations remaining]} item]
-            (case (:_type item)
-              ;; Fee allocation
-              :fee
-              (let [fee-amount (:fee/amount item)
-                    payment-to-fee (min remaining fee-amount)]
-                {:allocations (conj allocations
-                                    {:type :fee
-                                     :id (:fee/id item)
-                                     :amount payment-to-fee})
-                 :remaining (- remaining payment-to-fee)})
+         (fn [{:keys [allocations remaining]} item]
+           (case (:_type item)
+             ;; Fee allocation
+             :fee
+             (let [fee-amount (:fee/amount item)
+                   payment-to-fee (min remaining fee-amount)]
+               {:allocations (conj allocations
+                                   {:type :fee
+                                    :id (:fee/id item)
+                                    :amount payment-to-fee})
+                :remaining (- remaining payment-to-fee)})
 
-              ;; Installment allocation (profit before principal)
-              :installment
-              (let [profit-due (:installment/profit-due item)
-                    principal-due (:installment/principal-due item)
+             ;; Installment allocation (profit before principal)
+             :installment
+             (let [profit-due (:installment/profit-due item)
+                   principal-due (:installment/principal-due item)
 
-                    ;; Pay profit first
-                    payment-to-profit (min remaining profit-due)
-                    remaining-after-profit (- remaining payment-to-profit)
+                   ;; Pay profit first
+                   payment-to-profit (min remaining profit-due)
+                   remaining-after-profit (- remaining payment-to-profit)
 
-                    ;; Then pay principal
-                    payment-to-principal (min remaining-after-profit principal-due)
-                    remaining-after-principal (- remaining-after-profit payment-to-principal)]
+                   ;; Then pay principal
+                   payment-to-principal (min remaining-after-profit principal-due)
+                   remaining-after-principal (- remaining-after-profit payment-to-principal)]
 
-                {:allocations (conj allocations
-                                    {:type :installment
-                                     :id (:installment/id item)
-                                     :seq (:installment/seq item)
-                                     :profit-paid payment-to-profit
-                                     :principal-paid payment-to-principal})
-                 :remaining remaining-after-principal})))
-          {:allocations []
-           :remaining total-payments}
-          all-items)]
+               {:allocations (conj allocations
+                                   {:type :installment
+                                    :id (:installment/id item)
+                                    :seq (:installment/seq item)
+                                    :profit-paid payment-to-profit
+                                    :principal-paid payment-to-principal})
+                :remaining remaining-after-principal})))
+         {:allocations []
+          :remaining remaining-after-deposit}
+         all-items)]
 
-    ;; Return allocations + credit balance
+    ;; Return deposit allocation + fee/installment allocations + credit balance
     {:allocations final-allocations
+     :deposit-allocated deposit-allocated
      :credit-balance final-remaining}))
 
 ;; ============================================================
@@ -169,20 +172,21 @@
        first))
 
 (defn total-allocated
-  "Sum of all allocated amounts (excluding credit balance).
+  "Sum of all allocated amounts including deposit (excluding credit balance).
 
    Usage:
-     (def result (waterfall fees installments 100000M))
+     (def result (waterfall fees installments 100000M :deposit-due 60000M))
      (total-allocated result)
      ;; => 95000M (if 5000M is credit-balance)"
-  [{:keys [allocations]}]
-  (reduce
-    (fn [sum alloc]
-      (case (:type alloc)
-        :fee (+ sum (:amount alloc))
-        :installment (+ sum (:profit-paid alloc) (:principal-paid alloc))))
-    0M
-    allocations))
+  [{:keys [allocations deposit-allocated]}]
+  (+ (or deposit-allocated 0M)
+     (reduce
+      (fn [sum alloc]
+        (case (:type alloc)
+          :fee (+ sum (:amount alloc))
+          :installment (+ sum (:profit-paid alloc) (:principal-paid alloc))))
+      0M
+      allocations)))
 
 (defn verify-waterfall
   "Verify waterfall allocations sum correctly.
@@ -246,15 +250,13 @@
   (verify-waterfall result 50000M)
   ;; => {:valid? true ...}
 
-
-  ;; Example 2: Overpayment
+;; Example 2: Overpayment
   (def result2 (waterfall fees installments 1000000M))
   ;; Pays all fees and all installments, remainder goes to credit-balance
   (:credit-balance result2)
   ;; => 777500M
 
-
-  ;; Example 3: Fee due AFTER installments (realistic for management fees)
+;; Example 3: Fee due AFTER installments (realistic for management fees)
   ;; Fee due in October, installments due Aug/Sep
   (def late-fee [{:fee/id (random-uuid)
                   :fee/amount 5000M
@@ -282,8 +284,7 @@
   ;;     :credit-balance 0M}
   ;; Fee gets nothing because payment exhausted on earlier-due installments!
 
-
-  ;; Example 4: Multiple fees (same due-date, stable sort)
+;; Example 4: Multiple fees (same due-date, stable sort)
   (def multiple-fees
     [{:fee/id (random-uuid)
       :fee/amount 1000M
@@ -297,5 +298,4 @@
   ;; => {:allocations [{:type :fee :id ... :amount 1000M}
   ;;                   {:type :fee :id ... :amount 500M}]
   ;;     :credit-balance 0M}
-
   )
