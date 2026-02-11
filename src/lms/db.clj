@@ -351,7 +351,12 @@
    {:db/ident       :fee/due-date
     :db/valueType   :db.type/instant
     :db/cardinality :db.cardinality/one
-    :db/doc         "Fee due date"}
+    :db/doc         "Fee due date (legacy — derived from days-after-disbursement for new fees)"}
+
+   {:db/ident       :fee/days-after-disbursement
+    :db/valueType   :db.type/long
+    :db/cardinality :db.cardinality/one
+    :db/doc         "Days after disbursement when fee is due (0 = at disbursement)"}
 
    ;; ════════════════════════════════════════════════════════════
    ;; PAYMENT (money IN — business entity)
@@ -926,6 +931,4 @@
         :args [(d/db conn) test-contract-id]})
 
   ;; 7. Delete database (testing only!)
-  (delete-database!)
-
-  )
+  (delete-database!))

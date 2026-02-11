@@ -883,6 +883,17 @@
      :total-allocated total-allocated
      :balanced? (= principal total-allocated)}))
 
+(defn derive-fee-due-dates
+  "Compute fee due-dates from days-after-disbursement + disbursed-at.
+   Falls back to today when not yet disbursed."
+  [fees disbursed-at]
+  (let [base-date (or disbursed-at (java.util.Date.))]
+    (mapv (fn [fee]
+            (assoc fee :fee/due-date
+                   (dates/add-days base-date
+                                   (or (:fee/days-after-disbursement fee) 0))))
+          fees)))
+
 (defn enrich-fees
   "Attach waterfall allocations to fees.
 
@@ -976,6 +987,9 @@
                 principal-allocations]}
         (query-facts db contract-id)
 
+        ;; Derive fee due-dates from days-after-disbursement + disbursed-at
+        fees (derive-fee-due-dates fees (:contract/disbursed-at contract))
+
         total-payments (compute-waterfall-total payments disbursements deposits
                                                 principal-allocations)
         deposit-held (compute-deposit-held deposits contract-id)
@@ -1006,7 +1020,6 @@
                                                           :legal-name (:party/legal-name s)})
                                                  (:contract/authorized-signatories contract))
                    :status (derive-contract-status contract payments (:total-outstanding totals))
-                   :start-date (:contract/start-date contract)
                    :maturity-date (derive-maturity-date installments)
                    :disbursed-at (:contract/disbursed-at contract)
                    :written-off-at (:contract/written-off-at contract)
@@ -1076,7 +1089,8 @@
          (map (fn [c]
                 (let [contract-id (:contract/id c)
                       ;; Query facts needed for status derivation
-                      fees (get-fees db contract-id)
+                      raw-fees (get-fees db contract-id)
+                      fees (derive-fee-due-dates raw-fees (:contract/disbursed-at c))
                       installments (get-installments db contract-id)
                       payments (get-payments db contract-id)
                       disbursements (get-disbursements db contract-id)

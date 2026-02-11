@@ -62,7 +62,7 @@
     ;; 1. Required contract fields
     ;; Note: status is derived, not stored
     (doseq [k [:contract/external-id :contract/borrower
-               :contract/start-date :contract/principal]]
+               :contract/principal]]
       (when-not (get contract-data k)
         (add-error! k (str "Missing required field: " (name k)))))
 
@@ -87,8 +87,8 @@
 
     ;; 4. Installment principals must sum to contract principal
     (when (and (seq installments)
-              (:contract/principal contract-data)
-              (every? :installment/principal-due installments))
+               (:contract/principal contract-data)
+               (every? :installment/principal-due installments))
       (let [inst-sum (reduce + 0M (map :installment/principal-due installments))
             principal (:contract/principal contract-data)]
         (when-not (= inst-sum principal)
@@ -98,7 +98,7 @@
 
     ;; 5. Sequences must be contiguous starting from 1
     (when (and (seq installments)
-              (every? :installment/seq installments))
+               (every? :installment/seq installments))
       (let [seqs (sort (map :installment/seq installments))
             expected (vec (range 1 (inc (count installments))))]
         (when-not (= (vec seqs) expected)
@@ -107,8 +107,8 @@
 
     ;; 6. Due dates must be chronologically ordered
     (when (and (seq installments)
-              (every? :installment/seq installments)
-              (every? :installment/due-date installments))
+               (every? :installment/seq installments)
+               (every? :installment/due-date installments))
       (let [sorted-by-seq (sort-by :installment/seq installments)
             dates (map :installment/due-date sorted-by-seq)
             timestamps (map #(.getTime ^java.util.Date %) dates)]
@@ -118,11 +118,13 @@
 
     ;; 7. Fee required fields and positive amounts
     (doseq [[idx fee] (map-indexed vector fees)]
-      (doseq [k [:fee/type :fee/amount :fee/due-date]]
+      (doseq [k [:fee/type :fee/amount]]
         (when-not (get fee k)
           (add-error! k (str "Fee " (inc idx) " missing " (name k)))))
+      (when-not (some? (:fee/days-after-disbursement fee))
+        (add-error! :fee/days-after-disbursement (str "Fee " (inc idx) " missing days-after-disbursement")))
       (when (and (:fee/amount fee)
-                (not (pos? (:fee/amount fee))))
+                 (not (pos? (:fee/amount fee))))
         (add-error! :fee/amount (str "Fee " (inc idx) " amount must be positive"))))
 
     ;; 8. External-id uniqueness (only with db)
@@ -140,7 +142,7 @@
     (when (and db (:contract/facility contract-data))
       (let [facility-ref (:contract/facility contract-data)
             facility-id (when (and (vector? facility-ref)
-                                  (= :facility/id (first facility-ref)))
+                                   (= :facility/id (first facility-ref)))
                           (second facility-ref))]
         (when facility-id
           (let [fs (contract/facility-state db facility-id)
@@ -197,10 +199,10 @@
               principal-due (migration/parse-payment-amount (str/trim (nth row 2)))
               profit-due (migration/parse-payment-amount (str/trim (nth row 3)))
               remaining-principal (if (and has-remaining?
-                                          (> (count row) 4)
-                                          (not (str/blank? (nth row 4))))
-                                   (migration/parse-payment-amount (str/trim (nth row 4)))
-                                   (- contract-principal cumulative-principal))
+                                           (> (count row) 4)
+                                           (not (str/blank? (nth row 4))))
+                                    (migration/parse-payment-amount (str/trim (nth row 4)))
+                                    (- contract-principal cumulative-principal))
               inst {:installment/id (random-uuid)
                     :installment/seq seq-num
                     :installment/due-date due-date
@@ -290,7 +292,7 @@
       (try
         (ops/board-contract conn contract-data fees installments user-id)
         (log/info "Contract boarded" {:contract-id (:contract/id contract-data)
-                                       :external-id (:contract/external-id contract-data)})
+                                      :external-id (:contract/external-id contract-data)})
         {:success? true :contract-id (:contract/id contract-data)}
         (catch Exception e
           (log/error e "Boarding failed" {:external-id (:contract/external-id contract-data)})
@@ -345,7 +347,7 @@
           ;; 1. Board contract (atomic: contract + schedule + fees)
           (ops/board-contract conn contract-data fees installments user-id)
           (log/info "Contract boarded (existing)" {:contract-id contract-id
-                                                    :external-id (:contract/external-id contract-data)})
+                                                   :external-id (:contract/external-id contract-data)})
 
           ;; 2. Record historical disbursement (if provided)
           (when disbursement
@@ -357,49 +359,49 @@
                                      :iban (:iban disbursement)
                                      :bank (:bank disbursement))
             (log/info "Historical disbursement recorded" {:contract-id contract-id
-                                                           :amount (:amount disbursement)}))
+                                                          :amount (:amount disbursement)}))
 
           ;; 3. Replay payments chronologically
           (let [sorted-payments (sort-by :date payments)
                 result (reduce
-                         (fn [{:keys [processed skipped]} payment]
-                           (let [mapped (migration/map-tx-type payment)]
-                             (if (:skip? mapped)
-                               {:processed processed :skipped (inc skipped)}
-                               (do
-                                 (case (:tx-type mapped)
-                                   :payment
-                                   (ops/record-payment conn contract-id
-                                                       (:amount mapped)
-                                                       (:date payment)
-                                                       (or (:reference payment)
-                                                           (str "MIGRATED-" processed))
-                                                       user-id)
+                        (fn [{:keys [processed skipped]} payment]
+                          (let [mapped (migration/map-tx-type payment)]
+                            (if (:skip? mapped)
+                              {:processed processed :skipped (inc skipped)}
+                              (do
+                                (case (:tx-type mapped)
+                                  :payment
+                                  (ops/record-payment conn contract-id
+                                                      (:amount mapped)
+                                                      (:date payment)
+                                                      (or (:reference payment)
+                                                          (str "MIGRATED-" processed))
+                                                      user-id)
 
-                                   :disbursement
-                                   (ops/record-disbursement conn contract-id
-                                                            (:amount mapped)
-                                                            (:date payment)
-                                                            (or (:reference payment)
-                                                                (str "DISB-MIGRATED-" processed))
-                                                            user-id)
+                                  :disbursement
+                                  (ops/record-disbursement conn contract-id
+                                                           (:amount mapped)
+                                                           (:date payment)
+                                                           (or (:reference payment)
+                                                               (str "DISB-MIGRATED-" processed))
+                                                           user-id)
 
-                                   :deposit-refund
-                                   (ops/refund-deposit conn contract-id
-                                                       (:amount mapped)
-                                                       (:date payment)
-                                                       "Migrated deposit refund"
-                                                       user-id)
+                                  :deposit-refund
+                                  (ops/refund-deposit conn contract-id
+                                                      (:amount mapped)
+                                                      (:date payment)
+                                                      "Migrated deposit refund"
+                                                      user-id)
 
                                    ;; Unknown type — skip
-                                   nil)
-                                 {:processed (inc processed) :skipped skipped}))))
-                         {:processed 0 :skipped 0}
-                         sorted-payments)]
+                                  nil)
+                                {:processed (inc processed) :skipped skipped}))))
+                        {:processed 0 :skipped 0}
+                        sorted-payments)]
 
             (log/info "Payment replay complete" {:contract-id contract-id
-                                                  :processed (:processed result)
-                                                  :skipped (:skipped result)})
+                                                 :processed (:processed result)
+                                                 :skipped (:skipped result)})
 
             {:success? true
              :contract-id contract-id
@@ -408,7 +410,7 @@
 
         (catch Exception e
           (log/error e "Existing contract boarding failed"
-                    {:external-id (:contract/external-id contract-data)})
+                     {:external-id (:contract/external-id contract-data)})
           {:success? false
            :errors [{:field :system
                      :message (str "Boarding failed: " (.getMessage e))}]})))))
@@ -532,7 +534,7 @@
 
       (catch Exception e
         (log/error e "Origination failed"
-                  {:contract-id contract-id :completed-steps @completed})
+                   {:contract-id contract-id :completed-steps @completed})
         {:success? false
          :error (.getMessage e)
          :completed-steps @completed}))))
@@ -578,22 +580,21 @@
   ;; Board new contract (status derived as :pending until disbursement)
   ;; Prerequisite: create party first via lms.party/create-party
   (boarding/board-new-contract conn
-    {:contract/external-id "BOARD-001"
-     :contract/borrower [:party/id borrower-party-id]
-     :contract/start-date #inst "2024-01-01"
-     :contract/principal 200000M}
-    [{:fee/type :management :fee/amount 1000M :fee/due-date #inst "2024-01-01"}]
-    [{:installment/seq 1
-      :installment/due-date #inst "2024-01-31"
-      :installment/principal-due 100000M
-      :installment/profit-due 5000M
-      :installment/remaining-principal 200000M}
-     {:installment/seq 2
-      :installment/due-date #inst "2024-02-28"
-      :installment/principal-due 100000M
-      :installment/profit-due 5000M
-      :installment/remaining-principal 100000M}]
-    "test-user")
+                               {:contract/external-id "BOARD-001"
+                                :contract/borrower [:party/id borrower-party-id]
+                                :contract/start-date #inst "2024-01-01"
+                                :contract/principal 200000M}
+                               [{:fee/type :management :fee/amount 1000M :fee/due-date #inst "2024-01-01"}]
+                               [{:installment/seq 1
+                                 :installment/due-date #inst "2024-01-31"
+                                 :installment/principal-due 100000M
+                                 :installment/profit-due 5000M
+                                 :installment/remaining-principal 200000M}
+                                {:installment/seq 2
+                                 :installment/due-date #inst "2024-02-28"
+                                 :installment/principal-due 100000M
+                                 :installment/profit-due 5000M
+                                 :installment/remaining-principal 100000M}]
+                               "test-user")
   ;; => {:success? true :contract-id #uuid "..."}
-
   )

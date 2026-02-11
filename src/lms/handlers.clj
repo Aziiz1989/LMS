@@ -27,7 +27,92 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [clojure.edn :as edn]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [starfederation.datastar.clojure.api :as d*]
+            [starfederation.datastar.clojure.adapter.ring :as ring-sse]
+            [jsonista.core :as json]))
+
+;; ============================================================
+;; Datastar SSE Helpers
+;; ============================================================
+
+(defn sse-response
+  "Return a Datastar SSE response that patches a single HTML fragment then closes.
+   `html` is a Hiccup-rendered string. The fragment's root element must have an `id`
+   attribute so Datastar knows which DOM node to morph."
+  [request html]
+  (ring-sse/->sse-response request
+                           {ring-sse/on-open
+                            (fn [sse]
+                              (d*/patch-elements! sse html)
+                              (d*/close-sse! sse))}))
+
+(defn sse-ok
+  "SSE response: patch multiple HTML fragments, optionally merge signals, then close.
+   Used after successful mutations to update page sections and close modals."
+  [request {:keys [fragments signals]}]
+  (ring-sse/->sse-response request
+                           {ring-sse/on-open
+                            (fn [sse]
+                              (doseq [html fragments]
+                                (d*/patch-elements! sse html))
+                              (when signals
+                                (d*/patch-signals! sse (json/write-value-as-string signals)))
+                              (d*/close-sse! sse))}))
+
+(defn sse-error
+  "SSE response: show error flash message via Datastar fragment morph."
+  [request message]
+  (ring-sse/->sse-response request
+                           {ring-sse/on-open
+                            (fn [sse]
+                              (d*/patch-elements! sse
+                                                  (str (h/html (views/flash-message {:type :error :message message}))))
+                              (d*/close-sse! sse))}))
+
+(defn sse-redirect
+  "SSE response: client-side redirect via Datastar. Used when the current page
+   entity no longer exists (e.g. after contract retraction)."
+  [request url]
+  (ring-sse/->sse-response request
+                           {ring-sse/on-open
+                            (fn [sse]
+                              (d*/redirect! sse url)
+                              (d*/close-sse! sse))}))
+
+(defn- contract-fragments
+  "Re-query contract state and render updated page sections as SSE fragment data.
+   Returns map with :fragments and :signals for use with sse-ok.
+
+   Options:
+   - :flash       - flash message map {:type :success :message \"...\"}
+   - :close-modal - signal name to set false (e.g. \"showPaymentModal\")
+   - :sections    - set of sections to re-render (default #{:summary :fees :installments})
+   - :signals     - additional signals map to merge into response"
+  [conn contract-id {:keys [flash close-modal sections signals]
+                     :or {sections #{:summary :fees :installments}}}]
+  (let [db (d/db conn)
+        state (contract/contract-state db contract-id (java.util.Date.))
+        frags (cond-> []
+                flash
+                (conj (str (h/html (views/flash-message flash))))
+                (:summary sections)
+                (conj (str (h/html (views/contract-summary state))))
+                (:fees sections)
+                (conj (str (h/html (views/fees-table (:fees state)))))
+                (:installments sections)
+                (conj (str (h/html (views/installments-table (:installments state)))))
+                (:documents sections)
+                (conj (str (h/html (views/document-list-section
+                                    contract-id (:documents state)))))
+                (:parties sections)
+                (conj (str (h/html (views/parties-section
+                                    contract-id (:contract state)))))
+                (:origination-form sections)
+                (conj (str (h/html (views/origination-form contract-id state)))))]
+    {:fragments frags
+     :signals (merge (when close-modal {close-modal false})
+                     signals)}))
 
 ;; ============================================================
 ;; Contract List Handlers
@@ -74,7 +159,7 @@
   (try
     (let [contract-id-str (get-in request [:path-params :id])
           contract-id (try (parse-uuid contract-id-str)
-                          (catch Exception _ nil))
+                           (catch Exception _ nil))
           flash (:flash request)]
 
       (if-not contract-id
@@ -96,7 +181,7 @@
 
             (let [state (contract/contract-state db contract-id (java.util.Date.))]
               (log/info "Viewed contract" {:id contract-id
-                                          :external-id (get-in state [:contract :external-id])})
+                                           :external-id (get-in state [:contract :external-id])})
 
               (-> (response/response
                    (views/contract-detail-page state flash))
@@ -143,21 +228,15 @@
       (if (and contract-id amount (pos? amount))
         (let [preview (ops/preview-payment (:conn request) contract-id amount)]
           (log/info "Preview generated" {:changes (count (:changes preview))})
-          {:status 200
-           :headers {"Content-Type" "text/html; charset=utf-8"}
-           :body (str (h/html (views/payment-preview preview)))})
+          (sse-response request (str (h/html (views/payment-preview preview)))))
         (do
           (log/warn "Invalid preview params" {:contract-id contract-id
-                                               :amount amount})
-          {:status 200
-           :headers {"Content-Type" "text/html; charset=utf-8"}
-           :body ""})))
+                                              :amount amount})
+          (sse-response request "<div id=\"preview-area\"></div>"))))
 
     (catch Exception e
       (log/error e "Error previewing payment")
-      {:status 500
-       :headers {"Content-Type" "text/html; charset=utf-8"}
-       :body (str "<div class='preview-section' style='color: red;'>Error: " (.getMessage e) "</div>")})))
+      (sse-response request (str "<div id=\"preview-area\" class=\"preview-section\" style=\"color: red;\">Error: " (.getMessage e) "</div>")))))
 
 (defn record-payment-handler
   "Handle POST /contracts/:id/record-payment - record payment to contract.
@@ -188,28 +267,27 @@
       (if (and contract-id amount (pos? amount) reference date)
         (do
           (ops/record-payment (:conn request) contract-id amount date reference "web-user"
-                             :note (when-not (str/blank? note) note))
+                              :note (when-not (str/blank? note) note))
           (log/info "Payment recorded" {:contract-id contract-id
                                         :amount amount
                                         :reference reference
                                         :date date
                                         :note note})
-          (response/redirect (str "/contracts/" contract-id)))
+          (sse-ok request
+                  (contract-fragments (:conn request) contract-id
+                                      {:flash {:type :success :message (str "Payment of SAR " amount " recorded")}
+                                       :close-modal "showPaymentModal"})))
 
         (do
           (log/warn "Invalid payment data" {:contract-id contract-id-str
                                             :amount amount-str
                                             :reference reference
                                             :date date-str})
-          (-> (response/response (views/error-500-page "Invalid payment data"))
-              (response/status 400)
-              (response/content-type "text/html; charset=utf-8")))))
+          (sse-error request "Invalid payment data. Check all required fields."))))
 
     (catch Exception e
       (log/error e "Error recording payment")
-      (-> (response/response (views/error-500-page e))
-          (response/status 500)
-          (response/content-type "text/html; charset=utf-8")))))
+      (sse-error request (str "Error recording payment: " (.getMessage e))))))
 
 (defn retract-payment-handler
   "Handle POST /contracts/:id/retract-payment - retract a payment (data correction).
@@ -239,26 +317,24 @@
       (if (and contract-id payment-id reason)
         (do
           (ops/retract-payment (:conn request) payment-id reason "web-user"
-                              :note (when-not (str/blank? note) note))
+                               :note (when-not (str/blank? note) note))
           (log/info "Payment retracted" {:contract-id contract-id
                                          :payment-id payment-id
                                          :reason reason})
-          (response/redirect (str "/contracts/" contract-id)))
+          (sse-ok request
+                  (contract-fragments (:conn request) contract-id
+                                      {:flash {:type :success :message "Payment retracted"}
+                                       :close-modal "showRetractPaymentModal"})))
 
         (do
           (log/warn "Invalid retraction data" {:contract-id contract-id-str
                                                :payment-id payment-id-str
                                                :reason reason-str})
-          (-> (response/response (views/error-500-page "Invalid retraction data"))
-              (response/status 400)
-              (response/content-type "text/html; charset=utf-8")))))
+          (sse-error request "Invalid retraction data. Please select a reason."))))
 
     (catch Exception e
       (log/error e "Error retracting payment")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error
-                           :message (str "Error: " (.getMessage e))}))))))
+      (sse-error request (str "Error: " (.getMessage e))))))
 
 (defn retract-contract-handler
   "Handle POST /contracts/:id/retract-contract - retract a contract (data correction).
@@ -288,22 +364,16 @@
                                 :note (when-not (str/blank? note) note))
           (log/info "Contract retracted" {:contract-id contract-id
                                           :reason reason})
-          (-> (response/redirect "/contracts")
-              (assoc :flash "Contract has been retracted.")))
+          (sse-redirect request "/contracts"))
 
         (do
           (log/warn "Invalid contract retraction data" {:contract-id contract-id-str
-                                                         :reason reason-str})
-          (-> (response/redirect (str "/contracts/" contract-id-str))
-              (assoc :flash {:type :error
-                             :message "Invalid retraction data. Please select a reason."})))))
+                                                        :reason reason-str})
+          (sse-error request "Invalid retraction data. Please select a reason."))))
 
     (catch Exception e
       (log/error e "Error retracting contract")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error
-                           :message (str "Error: " (.getMessage e))}))))))
+      (sse-error request (str "Error: " (.getMessage e))))))
 
 ;; ============================================================
 ;; Settlement Handlers
@@ -349,23 +419,17 @@
                                              :date date-str
                                              :penalty-days penalty-days
                                              :settlement-amount (:settlement-amount result)})
-          {:status 200
-           :headers {"Content-Type" "text/html; charset=utf-8"}
-           :body (str (h/html (views/settlement-result result)))})
+          (sse-response request (str (h/html (views/settlement-result result)))))
 
         (do
           (log/warn "Invalid settlement params" {:contract-id contract-id-str
-                                                  :date date-str
-                                                  :penalty-days penalty-str})
-          {:status 200
-           :headers {"Content-Type" "text/html; charset=utf-8"}
-           :body "<div style=\"padding: 1rem; color: #991b1b; background: #fef2f2; border-radius: 0.375rem;\">Please provide a valid date and penalty days.</div>"})))
+                                                 :date date-str
+                                                 :penalty-days penalty-str})
+          (sse-response request "<div id=\"settlement-result-area\" style=\"padding: 1rem; color: #991b1b; background: #fef2f2; border-radius: 0.375rem;\">Please provide a valid date and penalty days.</div>"))))
 
     (catch Exception e
       (log/error e "Error calculating settlement")
-      {:status 200
-       :headers {"Content-Type" "text/html; charset=utf-8"}
-       :body (str "<div style=\"padding: 1rem; color: #991b1b; background: #fef2f2; border-radius: 0.375rem;\">Error: " (.getMessage e) "</div>")})))
+      (sse-response request (str "<div id=\"settlement-result-area\" style=\"padding: 1rem; color: #991b1b; background: #fef2f2; border-radius: 0.375rem;\">Error: " (.getMessage e) "</div>")))))
 
 ;; ============================================================
 ;; Boarding Handlers
@@ -377,21 +441,21 @@
    Ring collects same-named params as vectors when multiple values exist,
    or as a single string when only one. This normalizes both cases.
 
-   Form params: fee-type[], fee-amount[], fee-due-date[]
+   Form params: fee-type[], fee-amount[], fee-days-after-disbursement[]
 
    Returns: Sequence of fee maps with :fee/* keys"
   [form-params]
   (let [normalize (fn [v] (if (string? v) [v] (vec v)))
         types (some-> (get form-params "fee-type[]") normalize)
         amounts (some-> (get form-params "fee-amount[]") normalize)
-        due-dates (some-> (get form-params "fee-due-date[]") normalize)]
-    (when (and types amounts due-dates)
-      (->> (map vector types amounts due-dates)
+        days (some-> (get form-params "fee-days-after-disbursement[]") normalize)]
+    (when (and types amounts days)
+      (->> (map vector types amounts days)
            (remove (fn [[_ amt _]] (str/blank? amt)))
-           (mapv (fn [[type-str amount-str date-str]]
+           (mapv (fn [[type-str amount-str days-str]]
                    {:fee/type (keyword type-str)
                     :fee/amount (bigdec amount-str)
-                    :fee/due-date (dates/->date (dates/parse-date date-str))}))))))
+                    :fee/days-after-disbursement (parse-long days-str)}))))))
 
 (defn- parse-contract-params
   "Extract contract data from form params.
@@ -404,8 +468,6 @@
     (cond-> {:contract/external-id (get-param "external-id")
              :contract/borrower (when-let [pid (get-param "borrower-party-id")]
                                   [:party/id (parse-uuid pid)])
-             :contract/start-date (when-let [d (get-param "start-date")]
-                                    (dates/->date (dates/parse-date d)))
              :contract/principal (when-let [p (get-param "principal")]
                                    (bigdec p))}
 
@@ -481,10 +543,10 @@
       (if-not (and schedule-csv principal)
         (-> (response/response
              (views/boarding-form-page "new"
-               {:errors [{:field :schedule-csv :message "Schedule CSV file is required"}
-                         (when-not principal
-                           {:field :contract/principal :message "Principal is required"})]
-                :values params}))
+                                       {:errors [{:field :schedule-csv :message "Schedule CSV file is required"}
+                                                 (when-not principal
+                                                   {:field :contract/principal :message "Principal is required"})]
+                                        :values params}))
             (response/content-type "text/html; charset=utf-8"))
 
         (let [installments (boarding/parse-schedule-csv schedule-csv principal)
@@ -500,7 +562,7 @@
               (log/warn "Boarding validation failed" {:errors (:errors result)})
               (-> (response/response
                    (views/boarding-form-page "new"
-                     {:errors (:errors result) :values params}))
+                                             {:errors (:errors result) :values params}))
                   (response/content-type "text/html; charset=utf-8")))))))
 
     (catch Exception e
@@ -541,10 +603,10 @@
       (if-not (and schedule-csv principal)
         (-> (response/response
              (views/boarding-form-page "existing"
-               {:errors [{:field :schedule-csv :message "Schedule CSV file is required"}
-                         (when-not principal
-                           {:field :contract/principal :message "Principal is required"})]
-                :values params}))
+                                       {:errors [{:field :schedule-csv :message "Schedule CSV file is required"}
+                                                 (when-not principal
+                                                   {:field :contract/principal :message "Principal is required"})]
+                                        :values params}))
             (response/content-type "text/html; charset=utf-8"))
 
         (let [installments (boarding/parse-schedule-csv schedule-csv principal)
@@ -552,23 +614,23 @@
                          (boarding/parse-payment-csv payment-csv)
                          [])
               result (boarding/board-existing-contract
-                       (:conn request) contract-data fees installments
-                       payments disbursement "web-user")]
+                      (:conn request) contract-data fees installments
+                      payments disbursement "web-user")]
 
           (if (:success? result)
             (do
               (log/info "Existing contract boarded via web"
-                       {:contract-id (:contract-id result)
-                        :external-id (:contract/external-id contract-data)
-                        :payments-processed (:payments-processed result)
-                        :payments-skipped (:payments-skipped result)})
+                        {:contract-id (:contract-id result)
+                         :external-id (:contract/external-id contract-data)
+                         :payments-processed (:payments-processed result)
+                         :payments-skipped (:payments-skipped result)})
               (response/redirect (str "/contracts/" (:contract-id result))))
 
             (do
               (log/warn "Existing boarding validation failed" {:errors (:errors result)})
               (-> (response/response
                    (views/boarding-form-page "existing"
-                     {:errors (:errors result) :values params}))
+                                             {:errors (:errors result) :values params}))
                   (response/content-type "text/html; charset=utf-8")))))))
 
     (catch Exception e
@@ -648,31 +710,27 @@
             (do
               (log/info "Contract originated via web" {:contract-id contract-id
                                                        :steps (:steps result)})
-              (-> (response/redirect (str "/contracts/" contract-id))
-                  (assoc :flash (str "Contract originated successfully. Steps: "
-                                     (str/join ", " (map name (:steps result)))))))
+              (sse-ok request
+                      (contract-fragments (:conn request) contract-id
+                                          {:flash {:type :success
+                                                   :message (str "Contract originated. Steps: "
+                                                                 (str/join ", " (map name (:steps result))))}
+                                           :close-modal "showOriginationModal"})))
             (do
               (log/warn "Origination failed" {:contract-id contract-id
-                                               :error (:error result)})
-              (-> (response/redirect (str "/contracts/" contract-id))
-                  (assoc :flash {:type :error
-                                 :message (str "Origination failed: " (:error result))})))))
+                                              :error (:error result)})
+              (sse-error request (str "Origination failed: " (:error result))))))
 
         (do
           (log/warn "Invalid origination data" {:contract-id contract-id-str
-                                                 :date date-str
-                                                 :disbursement-amount (get-param "disbursement-amount")
-                                                 :disbursement-reference (get-param "disbursement-reference")})
-          (-> (response/redirect (str "/contracts/" contract-id-str))
-              (assoc :flash {:type :error
-                             :message "Invalid origination data. Date, disbursement amount, and reference are required."})))))
+                                                :date date-str
+                                                :disbursement-amount (get-param "disbursement-amount")
+                                                :disbursement-reference (get-param "disbursement-reference")})
+          (sse-error request "Invalid origination data. Date, disbursement amount, and reference are required."))))
 
     (catch Exception e
       (log/error e "Error originating contract")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error
-                           :message (str "Error: " (.getMessage e))}))))))
+      (sse-error request (str "Error: " (.getMessage e))))))
 
 (defn retract-origination-handler
   "Handle POST /contracts/:id/retract-origination — retract origination entities.
@@ -699,30 +757,28 @@
           (ops/retract-origination (:conn request) contract-id reason "web-user"
                                    :note (when-not (str/blank? note) note))
           (log/info "Origination retracted" {:contract-id contract-id
-                                              :reason reason})
-          (-> (response/redirect (str "/contracts/" contract-id))
-              (assoc :flash "Origination retracted successfully.")))
+                                             :reason reason})
+          (sse-ok request
+                  (contract-fragments (:conn request) contract-id
+                                      {:flash {:type :success :message "Origination retracted successfully."}
+                                       :close-modal "showRetractOriginationModal"
+                                       :sections #{:summary :fees :installments :origination-form}})))
 
         (do
           (log/warn "Invalid retraction data" {:contract-id contract-id-str
-                                                :reason reason-str})
-          (-> (response/redirect (str "/contracts/" contract-id-str))
-              (assoc :flash {:type :error
-                             :message "Please select a reason for correction."})))))
+                                               :reason reason-str})
+          (sse-error request "Please select a reason for correction."))))
 
     (catch Exception e
       (log/error e "Error retracting origination")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error
-                           :message (str "Error: " (.getMessage e))}))))))
+      (sse-error request (str "Error: " (.getMessage e))))))
 
 ;; ============================================================
 ;; History Tab Handler
 ;; ============================================================
 
 (defn history-tab-handler
-  "Handle GET /contracts/:id/history-tab — HTMX partial for history tab.
+  "Handle GET /contracts/:id/history-tab — SSE fragment for history tab.
 
    Query params:
    - page: page number (default 1)
@@ -730,7 +786,7 @@
    - from-date: filter from date (YYYY-MM-DD)
    - to-date: filter to date (YYYY-MM-DD)
 
-   Returns: HTML fragment for HTMX swap into tab content area."
+   Returns: SSE fragment morphed into tab content area."
   [request]
   (try
     (let [contract-id-str (get-in request [:path-params :id])
@@ -750,17 +806,15 @@
                          (catch Exception _ nil)))]
 
       (if-not contract-id
-        {:status 400
-         :headers {"Content-Type" "text/html; charset=utf-8"}
-         :body "<div>Invalid contract ID</div>"}
+        (sse-response request "<div id=\"history-tab-content\">Invalid contract ID</div>")
 
         (let [conn (:conn request)
               db (d/db conn)
               raw-history (contract/get-comprehensive-history
-                            conn db contract-id
-                            {:entity-types entity-types
-                             :from-date from-date
-                             :to-date to-date})
+                           conn db contract-id
+                           {:entity-types entity-types
+                            :from-date from-date
+                            :to-date to-date})
               entity-ids (contract/get-contract-entity-ids db contract-id)
               entity-labels (contract/build-entity-label-cache db entity-ids)
               formatted (contract/format-history-for-display raw-history entity-labels)
@@ -785,18 +839,16 @@
                                           :total-txs total
                                           :page safe-page})
 
-          {:status 200
-           :headers {"Content-Type" "text/html; charset=utf-8"}
-           :body (str (h/html
-                        (views/history-tab-content
-                          contract-id page-items filters pagination)))})))
+          (sse-response request
+                        (str (h/html
+                              (views/history-tab-content
+                               contract-id page-items filters pagination)))))))
 
     (catch Throwable e
       (log/error e "Error loading history tab")
-      {:status 200
-       :headers {"Content-Type" "text/html; charset=utf-8"}
-       :body (str "<div style=\"padding: 1rem; color: #991b1b; background: #fef2f2; border-radius: 0.375rem;\">Error loading history: "
-                  (.getMessage e) "</div>")})))
+      (sse-response request
+                    (str "<div id=\"history-tab-content\" style=\"padding: 1rem; color: #991b1b; background: #fef2f2; border-radius: 0.375rem;\">Error loading history: "
+                         (.getMessage e) "</div>")))))
 
 ;; ============================================================
 ;; Party Handlers
@@ -880,8 +932,8 @@
         (let [result (party/create-party (:conn request) data "web-user")
               party-id (:party-id result)]
           (log/info "Party created" {:party-id party-id
-                                      :type party-type
-                                      :name (get-param "legal-name")})
+                                     :type party-type
+                                     :name (get-param "legal-name")})
           (response/redirect (str "/parties/" party-id)))))
 
     (catch Exception e
@@ -921,7 +973,7 @@
                                [])
                   owns (party/get-ownerships-for-party db party-id)]
               (log/info "Viewed party" {:id party-id
-                                         :name (:party/legal-name p)})
+                                        :name (:party/legal-name p)})
               (-> (response/response
                    (views/party-detail-page p contracts ownerships owns))
                   (response/content-type "text/html; charset=utf-8")))))))
@@ -938,7 +990,7 @@
    Form params:
    - legal-name, email, phone, address
 
-   Returns: Redirect to party detail"
+   Returns: SSE redirect to party detail on success, SSE error on failure"
   [request]
   (try
     (let [party-id-str (get-in request [:path-params :id])
@@ -960,20 +1012,16 @@
                     (assoc :party/address (get-param "address")))]
 
       (if-not party-id
-        (-> (response/response (views/error-404-page))
-            (response/status 404)
-            (response/content-type "text/html; charset=utf-8"))
+        (sse-error request "Invalid party ID.")
 
         (do
           (party/update-party (:conn request) party-id updates "web-user")
           (log/info "Party updated" {:party-id party-id :fields (keys updates)})
-          (response/redirect (str "/parties/" party-id)))))
+          (sse-redirect request (str "/parties/" party-id)))))
 
     (catch Exception e
       (log/error e "Error updating party")
-      (-> (response/response (views/error-500-page e))
-          (response/status 500)
-          (response/content-type "text/html; charset=utf-8")))))
+      (sse-error request (str "Error updating party: " (.getMessage e))))))
 
 (defn add-guarantor-handler
   "Handle POST /contracts/:id/guarantors - add guarantor to contract.
@@ -981,7 +1029,7 @@
    Form params:
    - party-id: UUID of party to add as guarantor
 
-   Returns: Redirect to contract detail"
+   Returns: SSE response updating parties section"
   [request]
   (try
     (let [contract-id-str (get-in request [:path-params :id])
@@ -994,22 +1042,24 @@
         (do
           (party/add-guarantor (:conn request) contract-id party-id "web-user")
           (log/info "Guarantor added" {:contract-id contract-id :party-id party-id})
-          (response/redirect (str "/contracts/" contract-id)))
+          (sse-ok request
+                  (contract-fragments (:conn request) contract-id
+                                      {:flash {:type :success :message "Guarantor added"}
+                                       :sections #{:parties}
+                                       :signals {"guarantorPartyId" ""
+                                                 "guarantorSearch" ""
+                                                 "showGuarantorResults" false}})))
 
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error :message "Invalid party ID."}))))
+        (sse-error request "Invalid party ID.")))
 
     (catch Exception e
       (log/error e "Error adding guarantor")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error
-                           :message (str "Error: " (.getMessage e))}))))))
+      (sse-error request (str "Error: " (.getMessage e))))))
 
 (defn remove-guarantor-handler
   "Handle POST /contracts/:id/guarantors/:party-id/remove - remove guarantor.
 
-   Returns: Redirect to contract detail"
+   Returns: SSE response updating parties section"
   [request]
   (try
     (let [contract-id-str (get-in request [:path-params :id])
@@ -1022,17 +1072,16 @@
         (do
           (party/remove-guarantor (:conn request) contract-id party-id "web-user")
           (log/info "Guarantor removed" {:contract-id contract-id :party-id party-id})
-          (response/redirect (str "/contracts/" contract-id)))
+          (sse-ok request
+                  (contract-fragments (:conn request) contract-id
+                                      {:flash {:type :success :message "Guarantor removed"}
+                                       :sections #{:parties}})))
 
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error :message "Invalid party ID."}))))
+        (sse-error request "Invalid party ID.")))
 
     (catch Exception e
       (log/error e "Error removing guarantor")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error
-                           :message (str "Error: " (.getMessage e))}))))))
+      (sse-error request (str "Error: " (.getMessage e))))))
 
 (defn add-signatory-handler
   "Handle POST /contracts/:id/signatories - add authorized signatory.
@@ -1040,7 +1089,7 @@
    Form params:
    - party-id: UUID of person party to add as signatory
 
-   Returns: Redirect to contract detail"
+   Returns: SSE response updating parties section"
   [request]
   (try
     (let [contract-id-str (get-in request [:path-params :id])
@@ -1053,22 +1102,24 @@
         (do
           (party/add-signatory (:conn request) contract-id party-id "web-user")
           (log/info "Signatory added" {:contract-id contract-id :party-id party-id})
-          (response/redirect (str "/contracts/" contract-id)))
+          (sse-ok request
+                  (contract-fragments (:conn request) contract-id
+                                      {:flash {:type :success :message "Authorized signatory added"}
+                                       :sections #{:parties}
+                                       :signals {"signatoryPartyId" ""
+                                                 "signatorySearch" ""
+                                                 "showSignatoryResults" false}})))
 
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error :message "Invalid party ID."}))))
+        (sse-error request "Invalid party ID.")))
 
     (catch Exception e
       (log/error e "Error adding signatory")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error
-                           :message (str "Error: " (.getMessage e))}))))))
+      (sse-error request (str "Error: " (.getMessage e))))))
 
 (defn remove-signatory-handler
   "Handle POST /contracts/:id/signatories/:party-id/remove - remove signatory.
 
-   Returns: Redirect to contract detail"
+   Returns: SSE response updating parties section"
   [request]
   (try
     (let [contract-id-str (get-in request [:path-params :id])
@@ -1081,17 +1132,29 @@
         (do
           (party/remove-signatory (:conn request) contract-id party-id "web-user")
           (log/info "Signatory removed" {:contract-id contract-id :party-id party-id})
-          (response/redirect (str "/contracts/" contract-id)))
+          (sse-ok request
+                  (contract-fragments (:conn request) contract-id
+                                      {:flash {:type :success :message "Authorized signatory removed"}
+                                       :sections #{:parties}})))
 
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error :message "Invalid party ID."}))))
+        (sse-error request "Invalid party ID.")))
 
     (catch Exception e
       (log/error e "Error removing signatory")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error
-                           :message (str "Error: " (.getMessage e))}))))))
+      (sse-error request (str "Error: " (.getMessage e))))))
+
+(defn- ownership-fragments
+  "Re-query ownership data and render updated ownership section.
+   Returns map with :fragments and :signals for sse-ok."
+  [conn company-id flash & {:keys [signals]}]
+  (let [db (d/db conn)
+        ownerships (party/get-ownership db company-id)]
+    {:fragments (cond-> []
+                  flash
+                  (conj (str (h/html (views/flash-message flash))))
+                  true
+                  (conj (str (h/html (views/ownership-section company-id ownerships)))))
+     :signals signals}))
 
 (defn add-ownership-handler
   "Handle POST /parties/:id/ownership - record ownership stake.
@@ -1100,7 +1163,7 @@
    - owner-party-id: UUID of owner party
    - percentage: ownership percentage
 
-   Returns: Redirect to party detail"
+   Returns: SSE response updating ownership section"
   [request]
   (try
     (let [company-id-str (get-in request [:path-params :id])
@@ -1116,68 +1179,73 @@
       (if (and company-id owner-id percentage)
         (let [db (d/db (:conn request))
               validation (party/validate-ownership db {:owner-id owner-id
-                                                        :company-id company-id
-                                                        :percentage percentage})]
+                                                       :company-id company-id
+                                                       :percentage percentage})]
           (if-not (:valid? validation)
-            (-> (response/redirect (str "/parties/" company-id))
-                (assoc :flash {:type :error
-                               :message (str/join "; " (map :message (:errors validation)))}))
+            (sse-error request (str/join "; " (map :message (:errors validation))))
 
             (do
               (party/record-ownership (:conn request) owner-id company-id percentage "web-user")
               (log/info "Ownership recorded" {:company company-id :owner owner-id :pct percentage})
-              (response/redirect (str "/parties/" company-id)))))
+              (sse-ok request
+                      (ownership-fragments (:conn request) company-id
+                                           {:type :success :message "Ownership recorded"}
+                                           :signals {"ownerPartyId" ""
+                                                     "ownerSearch" ""
+                                                     "showOwnerResults" false})))))
 
-        (-> (response/redirect (str "/parties/" company-id-str))
-            (assoc :flash {:type :error :message "Invalid ownership data."}))))
+        (sse-error request "Invalid ownership data.")))
 
     (catch Exception e
       (log/error e "Error recording ownership")
-      (let [company-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/parties/" company-id-str))
-            (assoc :flash {:type :error
-                           :message (str "Error: " (.getMessage e))}))))))
+      (sse-error request (str "Error: " (.getMessage e))))))
 
 (defn remove-ownership-handler
   "Handle POST /parties/:id/ownership/:ownership-id/remove - remove ownership record.
 
-   Returns: Redirect to party detail"
+   Returns: SSE response updating ownership section"
   [request]
   (try
     (let [company-id-str (get-in request [:path-params :id])
+          company-id (try (parse-uuid company-id-str) (catch Exception _ nil))
           ownership-id-str (get-in request [:path-params :ownership-id])
           ownership-id (when ownership-id-str
                          (try (parse-uuid ownership-id-str) (catch Exception _ nil)))]
 
-      (if ownership-id
+      (if (and company-id ownership-id)
         (do
           (party/remove-ownership (:conn request) ownership-id "web-user")
           (log/info "Ownership removed" {:ownership-id ownership-id})
-          (response/redirect (str "/parties/" company-id-str)))
+          (sse-ok request
+                  (ownership-fragments (:conn request) company-id
+                                       {:type :success :message "Ownership removed"})))
 
-        (-> (response/redirect (str "/parties/" company-id-str))
-            (assoc :flash {:type :error :message "Invalid ownership ID."}))))
+        (sse-error request "Invalid ownership ID.")))
 
     (catch Exception e
       (log/error e "Error removing ownership")
-      (let [company-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/parties/" company-id-str))
-            (assoc :flash {:type :error
-                           :message (str "Error: " (.getMessage e))}))))))
+      (sse-error request (str "Error: " (.getMessage e))))))
 
 (defn search-parties-handler
-  "Handle GET /api/parties/search - search parties for HTMX autocomplete.
+  "Handle GET /api/parties/search - search parties for Datastar autocomplete.
 
    Query params:
    - q: search query (matches against legal-name, cr-number, national-id)
    - type: optional filter — \"company\" or \"person\"
+   - target: DOM element ID to patch results into (default \"borrower-results\")
+   - context: signal prefix — \"borrower\" or \"owner\" (default \"borrower\")
 
-   Returns: HTML fragment with matching party options"
+   Returns: SSE fragment with matching party options"
   [request]
   (try
     (let [db (d/db (:conn request))
           query (get-in request [:query-params "q"])
           type-str (get-in request [:query-params "type"])
+          target (or (get-in request [:query-params "target"]) "borrower-results")
+          context (or (get-in request [:query-params "context"]) "borrower")
+          id-signal (str "$" context "PartyId")
+          name-signal (str "$" context "Search")
+          results-signal (str "$show" (str/capitalize context) "Results")
           party-type (when type-str (keyword "party.type" type-str))
           all-parties (party/list-parties db :type party-type)
           matches (if (str/blank? query)
@@ -1188,25 +1256,34 @@
                                     (str/includes? (str/lower-case (or (:party/cr-number p) "")) q)
                                     (str/includes? (str/lower-case (or (:party/national-id p) "")) q)))
                               all-parties)))]
-      {:status 200
-       :headers {"Content-Type" "text/html; charset=utf-8"}
-       :body (str (h/html
-                   (if (empty? matches)
-                     [:div {:style "padding: 0.5rem; color: #6b7280;"} "No parties found."]
-                     [:div
-                      (for [p matches]
-                        [:div {:style "padding: 0.5rem; cursor: pointer; border-bottom: 1px solid #e5e7eb;"
-                               :onclick (str "selectParty('" (:party/id p) "', '" (:party/legal-name p) "')")
-                               :class "party-search-result"}
-                         [:strong (:party/legal-name p)]
-                         [:span {:style "margin-left: 0.5rem; color: #6b7280; font-size: 0.875rem;"}
-                          (or (:party/cr-number p) (:party/national-id p))]])])))})
+      (sse-response request
+                    (str (h/html
+                          [:div {:id target
+                                 :style "border: 1px solid var(--lms-border); border-radius: var(--lms-radius-md); max-height: 200px; overflow-y: auto; background: var(--lms-card); box-shadow: var(--lms-shadow-lg);"
+                                 "data-show" results-signal}
+                           (if (empty? matches)
+                             [:div.text-muted {:style "padding: 0.5rem;"} "No parties found."]
+                             (for [p matches]
+                               [:div {:class "party-search-result"
+                                      "data-on:click" (str id-signal " = '" (:party/id p)
+                                                           "'; " name-signal " = '" (:party/legal-name p)
+                                                           "'; " results-signal " = false")}
+                                [:strong (:party/legal-name p)]
+                                [:span.text-muted {:style "margin-left: 0.5rem;"}
+                                 (or (:party/cr-number p) (:party/national-id p))]]))]))))
 
     (catch Exception e
       (log/error e "Error searching parties")
-      {:status 500
-       :headers {"Content-Type" "text/html; charset=utf-8"}
-       :body "<div>Error searching parties</div>"})))
+      (sse-response request (str "<div id=\"" "borrower-results" "\">Error searching parties</div>")))))
+
+(defn fee-row-template-handler
+  "Handle GET /api/fee-row-template — return a new fee row fragment via SSE.
+   Appended into #fee-rows by Datastar."
+  [request]
+  (let [idx (try (Integer/parseInt (or (get-in request [:query-params "n"]) "1"))
+                 (catch Exception _ 1))]
+    (sse-response request
+                  (str (h/html (views/fee-row-template idx))))))
 
 ;; ============================================================
 ;; Document PDF Download Handler
@@ -1247,7 +1324,7 @@
             doc-contract-attr (keyword (name doc-type) "contract")
             pull-pattern ['* {doc-contract-attr [:contract/id]}]
             doc (d/pull db pull-pattern
-                       [(keyword (name doc-type) "id") doc-id])]
+                        [(keyword (name doc-type) "id") doc-id])]
 
         (when-not doc
           (log/warn "Document not found" {:type doc-type :id doc-id})
@@ -1257,7 +1334,7 @@
         (let [doc-contract-id (get-in doc [doc-contract-attr :contract/id])]
           (when-not (= doc-contract-id contract-id)
             (log/warn "Document does not belong to contract"
-                     {:doc-contract-id doc-contract-id :contract-id contract-id})
+                      {:doc-contract-id doc-contract-id :contract-id contract-id})
             (throw (ex-info "Document not found" {}))))
 
         ;; Extract snapshot
@@ -1275,8 +1352,8 @@
                         contract (contract/get-contract db contract-id)
                         borrower (:contract/borrower contract)
                         enriched-data (assoc snapshot-data
-                                            :contract {:external-id (:contract/external-id contract)
-                                                      :customer-name (:party/legal-name borrower)})
+                                             :contract {:external-id (:contract/external-id contract)
+                                                        :customer-name (:party/legal-name borrower)})
                         ;; Add settlement-date from document entity
                         enriched-with-date (assoc enriched-data
                                                   :settlement-date
@@ -1355,20 +1432,21 @@
             penalty-days (Integer/parseInt penalty-days-str)]
 
         (ops/generate-clearance-letter (:conn request) contract-id settlement-date
-                                      penalty-days "web-user")
+                                       penalty-days "web-user")
 
         (log/info "Generated clearance letter" {:contract-id contract-id
                                                 :settlement-date settlement-date
                                                 :penalty-days penalty-days})
 
-        (-> (response/redirect (str "/contracts/" contract-id))
-            (assoc :flash {:type :success :message "Clearance letter generated successfully"}))))
+        (sse-ok request
+                (contract-fragments (:conn request) contract-id
+                                    {:flash {:type :success :message "Clearance letter generated successfully"}
+                                     :close-modal "showClearanceLetterModal"
+                                     :sections #{:documents}}))))
 
     (catch Exception e
       (log/error e "Error generating clearance letter")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error :message (str "Error generating clearance letter: " (.getMessage e))}))))))
+      (sse-error request (str "Error generating clearance letter: " (.getMessage e))))))
 
 (defn generate-statement-handler
   "Handle POST /contracts/:id/generate-statement
@@ -1397,32 +1475,33 @@
         (throw (ex-info "Period end date is required" {})))
 
       (let [period-start (java.util.Date/from
-                         (.toInstant
-                          (.atStartOfDay
-                           (java.time.LocalDate/parse period-start-str
-                                                      java.time.format.DateTimeFormatter/ISO_LOCAL_DATE)
-                           (java.time.ZoneId/of "UTC"))))
+                          (.toInstant
+                           (.atStartOfDay
+                            (java.time.LocalDate/parse period-start-str
+                                                       java.time.format.DateTimeFormatter/ISO_LOCAL_DATE)
+                            (java.time.ZoneId/of "UTC"))))
             period-end (java.util.Date/from
-                       (.toInstant
-                        (.atStartOfDay
-                         (java.time.LocalDate/parse period-end-str
-                                                    java.time.format.DateTimeFormatter/ISO_LOCAL_DATE)
-                         (java.time.ZoneId/of "UTC"))))]
+                        (.toInstant
+                         (.atStartOfDay
+                          (java.time.LocalDate/parse period-end-str
+                                                     java.time.format.DateTimeFormatter/ISO_LOCAL_DATE)
+                          (java.time.ZoneId/of "UTC"))))]
 
         (ops/generate-statement (:conn request) contract-id period-start period-end "web-user")
 
         (log/info "Generated statement" {:contract-id contract-id
-                                        :period-start period-start
-                                        :period-end period-end})
+                                         :period-start period-start
+                                         :period-end period-end})
 
-        (-> (response/redirect (str "/contracts/" contract-id))
-            (assoc :flash {:type :success :message "Statement generated successfully"}))))
+        (sse-ok request
+                (contract-fragments (:conn request) contract-id
+                                    {:flash {:type :success :message "Statement generated successfully"}
+                                     :close-modal "showStatementModal"
+                                     :sections #{:documents}}))))
 
     (catch Exception e
       (log/error e "Error generating statement")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error :message (str "Error generating statement: " (.getMessage e))}))))))
+      (sse-error request (str "Error generating statement: " (.getMessage e))))))
 
 (defn generate-contract-agreement-handler
   "Handle POST /contracts/:id/generate-contract-agreement
@@ -1442,14 +1521,14 @@
 
       (log/info "Generated contract agreement" {:contract-id contract-id})
 
-      (-> (response/redirect (str "/contracts/" contract-id))
-          (assoc :flash {:type :success :message "Contract agreement generated successfully"})))
+      (sse-ok request
+              (contract-fragments (:conn request) contract-id
+                                  {:flash {:type :success :message "Contract agreement generated successfully"}
+                                   :sections #{:documents}})))
 
     (catch Exception e
       (log/error e "Error generating contract agreement")
-      (let [contract-id-str (get-in request [:path-params :id])]
-        (-> (response/redirect (str "/contracts/" contract-id-str))
-            (assoc :flash {:type :error :message (str "Error generating contract agreement: " (.getMessage e))}))))))
+      (sse-error request (str "Error generating contract agreement: " (.getMessage e))))))
 
 ;; ============================================================
 ;; Development Helpers
@@ -1464,5 +1543,4 @@
 
   ;; View specific contract
   ;; (view-contract-handler {:path-params {:id "some-uuid-here"} :conn @lms.core/conn})
-
   )

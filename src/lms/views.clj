@@ -24,26 +24,20 @@
    - flash: Flash map with :type (:error, :success, :warning) and :message keys,
             or a string for simple success messages
 
-   Returns: Hiccup div or nil if no flash"
+   Returns: Hiccup div (always renders #flash-area for Datastar morphing)"
   [flash]
-  (when flash
+  (if flash
     (let [{:keys [type message]} (if (string? flash)
                                    {:type :success :message flash}
                                    flash)
-          styles {:error {:bg "#fef2f2" :border "#fca5a5" :text "#991b1b"}
-                  :success {:bg "#f0fdf4" :border "#86efac" :text "#166534"}
-                  :warning {:bg "#fffbeb" :border "#fcd34d" :text "#92400e"}}
-          style (get styles type (:success styles))]
-      [:div {:style (format "padding: 1rem; margin-bottom: 1rem; border-radius: 0.375rem; background-color: %s; border: 1px solid %s; color: %s;"
-                            (:bg style) (:border style) (:text style))}
-       [:div {:style "display: flex; align-items: center; gap: 0.5rem;"}
-        [:span {:style "font-weight: 600;"}
-         (case type
-           :error "Error:"
-           :success "Success:"
-           :warning "Warning:"
-           "")]
-        [:span message]]])))
+          cls (case type
+                :error "flash-danger"
+                :warning "flash-caution"
+                "flash-ok")]
+      [:div#flash-area {:class cls}
+       [:strong (case type :error "Error: " :warning "Warning: " "Success: ")]
+       [:span message]])
+    [:div#flash-area]))
 
 (defn format-money
   "Format money amount in SAR with thousands separators.
@@ -53,7 +47,7 @@
   [amount]
   (when amount
     (let [formatted (format "%.2f" (double amount))]
-      (str/replace formatted #"\\B(?=(\\d{3})+(?!\\d))" ","))))
+      (str/replace formatted #"\B(?=(\d{3})+(?!\d))" ","))))
 
 (defn format-date
   "Format date as YYYY-MM-DD.
@@ -72,17 +66,13 @@
 
    Returns: Hiccup span with styling"
   [status]
-  (let [status-styles
-        {:paid {:bg "#10b981" :text "white"}
-         :partial {:bg "#f59e0b" :text "white"}
-         :overdue {:bg "#ef4444" :text "white"}
-         :scheduled {:bg "#6b7280" :text "white"}
-         :unpaid {:bg "#6b7280" :text "white"}
-         :active {:bg "#3b82f6" :text "white"}
-         :closed {:bg "#6b7280" :text "white"}}
-        style (get status-styles status {:bg "#6b7280" :text "white"})]
-    [:span {:style (format "display: inline-block; padding: 0.25rem 0.75rem; border-radius: 0.375rem; font-size: 0.875rem; font-weight: 600; background-color: %s; color: %s;"
-                           (:bg style) (:text style))}
+  (let [cls (case status
+              :paid "st-ok"
+              :active "st-ok"
+              :partial "st-warn"
+              :overdue "st-err"
+              "st-off")]
+    [:span {:class cls}
      (str/upper-case (name status))]))
 
 ;; ============================================================
@@ -98,775 +88,87 @@
 
    Returns: Complete HTML5 page"
   [title & content]
-  (html5
-   [:head
-    [:meta {:charset "UTF-8"}]
-    [:meta {:name "viewport" :content "width=device-width, initial-scale=1.0"}]
-    [:title (str title " | LMS")]
-    [:script {:src "https://unpkg.com/htmx.org@2.0.4"}]
-    [:style "
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-        font-size: 16px;
-        line-height: 1.5;
-        color: #1f2937;
-        background-color: #f9fafb;
-      }
-      .container { max-width: 1280px; margin: 0 auto; padding: 0 1rem; }
-      .header {
-        background-color: white;
-        border-bottom: 1px solid #e5e7eb;
-        padding: 1rem 0;
-        margin-bottom: 2rem;
-      }
-      .header h1 { font-size: 1.5rem; font-weight: 700; }
-      .nav { margin-top: 0.5rem; }
-      .nav a {
-        color: #3b82f6;
-        text-decoration: none;
-        margin-right: 1.5rem;
-        font-weight: 500;
-      }
-      .nav a:hover { text-decoration: underline; }
-      .card {
-        background-color: white;
-        border: 1px solid #e5e7eb;
-        border-radius: 0.5rem;
-        padding: 1.5rem;
-        margin-bottom: 1.5rem;
-        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-      }
-      .card h2 {
-        font-size: 1.25rem;
-        font-weight: 600;
-        margin-bottom: 1rem;
-        color: #111827;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.875rem;
-      }
-      th {
-        text-align: left;
-        padding: 0.75rem 1rem;
-        background-color: #f9fafb;
-        border-bottom: 2px solid #e5e7eb;
-        font-weight: 600;
-        color: #6b7280;
-        text-transform: uppercase;
-        font-size: 0.75rem;
-        letter-spacing: 0.05em;
-      }
-      td {
-        padding: 0.75rem 1rem;
-        border-bottom: 1px solid #e5e7eb;
-      }
-      tr:hover { background-color: #f9fafb; }
-      .text-right { text-align: right; }
-      .text-muted { color: #6b7280; }
-      .btn {
-        display: inline-block;
-        padding: 0.5rem 1rem;
-        border-radius: 0.375rem;
-        font-weight: 500;
-        text-decoration: none;
-        border: none;
-        cursor: pointer;
-        font-size: 0.875rem;
-      }
-      .btn-primary {
-        background-color: #3b82f6;
-        color: white;
-      }
-      .btn-primary:hover {
-        background-color: #2563eb;
-      }
-      .btn-secondary {
-        background-color: #6b7280;
-        color: white;
-      }
-      .btn-secondary:hover {
-        background-color: #4b5563;
-      }
-      .btn-success {
-        background-color: #10b981;
-        color: white;
-      }
-      .btn-success:hover {
-        background-color: #059669;
-      }
-      .summary-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 1rem;
-        margin-bottom: 1.5rem;
-      }
-      .summary-item {
-        padding: 1rem;
-        background-color: #f9fafb;
-        border-radius: 0.375rem;
-      }
-      .summary-item .label {
-        font-size: 0.75rem;
-        color: #6b7280;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        font-weight: 600;
-        margin-bottom: 0.25rem;
-      }
-      .summary-item .value {
-        font-size: 1.5rem;
-        font-weight: 700;
-        color: #111827;
-      }
-      .summary-item.highlight {
-        background-color: #dbeafe;
-      }
-      .summary-item.highlight .value {
-        color: #1e40af;
-      }
-      .empty-state {
-        text-align: center;
-        padding: 3rem 1rem;
-        color: #6b7280;
-      }
-      .empty-state svg {
-        width: 4rem;
-        height: 4rem;
-        margin: 0 auto 1rem;
-        color: #d1d5db;
-      }
-      .modal {
-        display: none;
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background-color: rgba(0, 0, 0, 0.5);
-        z-index: 1000;
-        align-items: center;
-        justify-content: center;
-      }
-      .modal.active {
-        display: flex;
-      }
-      .modal-content {
-        background-color: white;
-        border-radius: 0.5rem;
-        padding: 2rem;
-        max-width: 600px;
-        width: 90%;
-        max-height: 90vh;
-        overflow-y: auto;
-        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-      }
-      .modal-header {
-        margin-bottom: 1.5rem;
-      }
-      .modal-header h3 {
-        font-size: 1.5rem;
-        font-weight: 700;
-        color: #111827;
-      }
-      .form-group {
-        margin-bottom: 1rem;
-      }
-      .form-group label {
-        display: block;
-        font-weight: 600;
-        margin-bottom: 0.5rem;
-        color: #374151;
-      }
-      .form-group input {
-        width: 100%;
-        padding: 0.5rem 0.75rem;
-        border: 1px solid #d1d5db;
-        border-radius: 0.375rem;
-        font-size: 1rem;
-      }
-      .form-group input:focus {
-        outline: none;
-        border-color: #3b82f6;
-        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-      }
-      .modal-actions {
-        display: flex;
-        gap: 0.75rem;
-        justify-content: flex-end;
-        margin-top: 1.5rem;
-      }
-      .preview-section {
-        margin-top: 1.5rem;
-        padding: 1rem;
-        background-color: #f9fafb;
-        border-radius: 0.375rem;
-        border: 1px solid #e5e7eb;
-      }
-      .preview-section h4 {
-        font-size: 1rem;
-        font-weight: 600;
-        margin-bottom: 0.75rem;
-        color: #111827;
-      }
-      .preview-item {
-        display: flex;
-        justify-content: space-between;
-        padding: 0.5rem 0;
-        border-bottom: 1px solid #e5e7eb;
-      }
-      .preview-item:last-child {
-        border-bottom: none;
-      }
-      .preview-item .label {
-        color: #6b7280;
-      }
-      .preview-item .value {
-        font-weight: 600;
-        color: #111827;
-      }
-      .htmx-indicator {
-        display: none;
-      }
-      .htmx-request .htmx-indicator {
-        display: inline;
-      }
-
-      /* Transaction Timeline */
-      .tx-timeline {
-        position: relative;
-        padding-left: 2rem;
-      }
-      .tx-timeline::before {
-        content: '';
-        position: absolute;
-        left: 0.5rem;
-        top: 0;
-        bottom: 0;
-        width: 2px;
-        background: linear-gradient(to bottom, #d1d5db 0%, #e5e7eb 100%);
-      }
-      .tx-event {
-        position: relative;
-        padding: 1rem 0;
-        border-bottom: 1px solid #f3f4f6;
-      }
-      .tx-event:last-child {
-        border-bottom: none;
-      }
-      .tx-event::before {
-        content: '';
-        position: absolute;
-        left: -1.625rem;
-        top: 1.125rem;
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        border: 2px solid white;
-        box-shadow: 0 0 0 2px #e5e7eb;
-      }
-      .tx-event.type-payment::before { background: #10b981; }
-      .tx-event.type-reversal::before { background: #f59e0b; }
-      .tx-event.type-reversed::before { background: #ef4444; }
-      .tx-event.type-retracted::before { background: #ef4444; }
-      .tx-event.type-boarding::before { background: #6b7280; }
-      .tx-event.type-disbursement::before { background: #3b82f6; }
-      .tx-event.type-deposit::before { background: #8b5cf6; }
-      .tx-event.type-principal-allocation::before { background: #f97316; }
-      .tx-event.type-reversed, .tx-event.type-retracted {
-        opacity: 0.7;
-      }
-      .tx-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 0.25rem;
-      }
-      .tx-type {
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-      .tx-type-payment { color: #059669; }
-      .tx-type-reversal { color: #d97706; }
-      .tx-type-reversed { color: #dc2626; text-decoration: line-through; }
-      .tx-type-retracted-payment { color: #dc2626; }
-      .tx-type-boarding { color: #6b7280; }
-      .tx-type-disbursement { color: #2563eb; }
-      .tx-type-deposit { color: #7c3aed; }
-      .tx-type-principal-allocation { color: #ea580c; }
-      .tx-retraction-reason {
-        display: inline-block;
-        font-size: 0.6875rem;
-        font-weight: 500;
-        padding: 0.125rem 0.5rem;
-        border-radius: 9999px;
-        background: #fee2e2;
-        color: #991b1b;
-        border: 1px solid #fca5a5;
-        margin-top: 0.25rem;
-      }
-      .tx-timestamp {
-        font-size: 0.75rem;
-        color: #9ca3af;
-        font-family: ui-monospace, SFMono-Regular, 'SF Mono', monospace;
-      }
-      .tx-amount {
-        font-size: 1.125rem;
-        font-weight: 600;
-        font-family: ui-monospace, SFMono-Regular, 'SF Mono', monospace;
-        color: #111827;
-        margin: 0.25rem 0;
-      }
-      .tx-amount.reversed {
-        text-decoration: line-through;
-        color: #dc2626;
-      }
-      .tx-amount.reversal {
-        color: #d97706;
-      }
-      .tx-amount.reversal::before {
-        content: '\u2212 ';
-      }
-      .tx-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 1rem;
-        font-size: 0.8125rem;
-        color: #6b7280;
-        margin-top: 0.25rem;
-      }
-      .tx-meta-item {
-        display: flex;
-        gap: 0.25rem;
-      }
-      .tx-meta-label {
-        color: #9ca3af;
-      }
-      .tx-link-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.25rem;
-        font-size: 0.75rem;
-        padding: 0.125rem 0.5rem;
-        border-radius: 9999px;
-        margin-top: 0.5rem;
-      }
-      .tx-link-badge.reversal-link {
-        background: #fef3c7;
-        color: #92400e;
-        border: 1px solid #fcd34d;
-      }
-      .tx-link-badge.reversed-link {
-        background: #fee2e2;
-        color: #991b1b;
-        border: 1px solid #fca5a5;
-      }
-      .tx-reason {
-        margin-top: 0.5rem;
-        font-size: 0.8125rem;
-        color: #92400e;
-        font-style: italic;
-      }
-
-      /* Settlement Calculator */
-      .settlement-result {
-        margin-top: 1.5rem;
-      }
-      .settlement-hero {
-        text-align: center;
-        padding: 1.75rem 1rem;
-        margin-bottom: 1.25rem;
-        border-radius: 0.5rem;
-        border: 1px solid #c7d2fe;
-        background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
-      }
-      .settlement-hero .hero-label {
-        font-size: 0.6875rem;
-        font-weight: 700;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: #6366f1;
-        margin-bottom: 0.375rem;
-      }
-      .settlement-hero .hero-amount {
-        font-size: 2.25rem;
-        font-weight: 800;
-        color: #312e81;
-        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-        letter-spacing: -0.02em;
-        line-height: 1.2;
-      }
-      .settlement-hero.refund {
-        background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-        border-color: #86efac;
-      }
-      .settlement-hero.refund .hero-label { color: #059669; }
-      .settlement-hero.refund .hero-amount { color: #064e3b; }
-      .settlement-waterfall {
-        border: 1px solid #e5e7eb;
-        border-radius: 0.5rem;
-        overflow: hidden;
-        margin-bottom: 1rem;
-      }
-      .settlement-item {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 0.625rem 1rem;
-        border-bottom: 1px solid #f3f4f6;
-        font-size: 0.875rem;
-      }
-      .settlement-item:last-child { border-bottom: none; }
-      .settlement-item .s-label {
-        color: #374151;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-      }
-      .settlement-item .s-sign {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 1.25rem;
-        height: 1.25rem;
-        border-radius: 50%;
-        font-size: 0.75rem;
-        font-weight: 700;
-        flex-shrink: 0;
-      }
-      .settlement-item .s-sign.plus {
-        background: #fef3c7;
-        color: #92400e;
-      }
-      .settlement-item .s-sign.minus {
-        background: #dbeafe;
-        color: #1e40af;
-      }
-      .settlement-item .s-amount {
-        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-        font-weight: 600;
-        color: #111827;
-        font-size: 0.875rem;
-      }
-      .settlement-item.sub-detail {
-        padding-left: 2.75rem;
-        background-color: #fafafa;
-      }
-      .settlement-item.sub-detail .s-label { color: #6b7280; font-size: 0.8125rem; }
-      .settlement-item.sub-detail .s-amount { color: #6b7280; font-weight: 500; font-size: 0.8125rem; }
-      .settlement-divider {
-        border-bottom: 2px solid #d1d5db;
-        margin: 0;
-      }
-      .settlement-item.total {
-        background-color: #f9fafb;
-        font-weight: 700;
-      }
-      .settlement-item.total .s-label { color: #111827; font-weight: 700; }
-      .settlement-item.total .s-amount { font-size: 1rem; color: #111827; }
-      .settlement-period {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 1.5rem;
-        padding: 0.75rem 1rem;
-        background: #f9fafb;
-        border: 1px solid #e5e7eb;
-        border-radius: 0.375rem;
-        font-size: 0.8125rem;
-        color: #6b7280;
-      }
-      .settlement-period .sp-item {
-        display: flex;
-        gap: 0.375rem;
-      }
-      .settlement-period .sp-label { color: #9ca3af; }
-      .settlement-period .sp-value {
-        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-        color: #374151;
-      }
-      .settlement-override-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.25rem;
-        font-size: 0.75rem;
-        padding: 0.125rem 0.625rem;
-        border-radius: 9999px;
-        background: #fef3c7;
-        color: #92400e;
-        border: 1px solid #fcd34d;
-        margin-top: 0.75rem;
-      }
-      .override-toggle {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        margin-bottom: 0.5rem;
-        font-size: 0.875rem;
-        color: #6b7280;
-        cursor: pointer;
-      }
-      .override-toggle input[type=checkbox] {
-        width: auto;
-        cursor: pointer;
-      }
-      .override-fields { display: none; }
-      .override-fields.visible { display: block; }
-      .btn-settlement {
-        background-color: #4f46e5;
-        color: white;
-      }
-      .btn-settlement:hover {
-        background-color: #4338ca;
-      }
-
-      /* Tabs */
-      .tabs {
-        display: flex;
-        border-bottom: 2px solid #e5e7eb;
-        margin-bottom: 1.5rem;
-        gap: 0;
-      }
-      .tab {
-        padding: 0.75rem 1.5rem;
-        cursor: pointer;
-        font-weight: 600;
-        text-decoration: none;
-        border-bottom: 2px solid transparent;
-        margin-bottom: -2px;
-        color: #6b7280;
-        font-size: 0.9375rem;
-      }
-      .tab:hover { background: #f9fafb; color: #374151; }
-      .tab.active {
-        border-bottom-color: #3b82f6;
-        color: #3b82f6;
-      }
+  (html5 {:data-theme "light"}
+         [:head
+          [:meta {:charset "UTF-8"}]
+          [:meta {:name "viewport" :content "width=device-width, initial-scale=1.0"}]
+          [:title (str title " | LMS")]
+          [:link {:rel "preconnect" :href "https://fonts.googleapis.com"}]
+          [:link {:rel "preconnect" :href "https://fonts.gstatic.com" :crossorigin ""}]
+          [:link {:rel "stylesheet" :href "https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..800;1,9..40,300..800&display=swap"}]
+          [:script {:src "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-RC.7/bundles/datastar.js" :type "module"}]
+          (include-css "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css")
+          [:style "
+      :root {
+        --pico-font-family: 'DM Sans', system-ui, sans-serif;
+        --pico-font-size: 0.9375rem;
+        --pico-border-radius: 0.5rem;
+        --pico-primary: #6366f1;
+        --pico-primary-hover: #4f46e5;
+        --pico-primary-inverse: #fff;
+        --pico-background-color: #fafaf9;
+        --pico-card-background-color: #fff;
+        --pico-color: #292524;
+        --pico-h1-color: #1c1917;
+        --pico-h2-color: #1c1917;
+        --pico-h3-color: #44403c;
+        --pico-muted-color: #78716c;
+        --pico-muted-border-color: #e7e5e4;
+        --color-ok: #16a34a;
+        --color-ok-bg: #f0fdf4;
+        --color-warn: #d97706;
+        --color-warn-bg: #fffbeb;
+        --color-err: #dc2626;
+        --color-err-bg: #fef2f2;
+        --font-mono: ui-monospace, 'SFMono-Regular', monospace;
+      }
+      body > nav { border-bottom: 1px solid var(--pico-muted-border-color); margin-bottom: 1.5rem; }
+      [class^='st-'] { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
+      .st-ok { color: var(--color-ok); background: var(--color-ok-bg); }
+      .st-warn { color: var(--color-warn); background: var(--color-warn-bg); }
+      .st-err { color: var(--color-err); background: var(--color-err-bg); }
+      .st-off { color: var(--pico-muted-color); background: #f5f5f4; }
+      .flash-ok { border-left: 3px solid var(--color-ok); background: var(--color-ok-bg); padding: 1rem; border-radius: var(--pico-border-radius); margin-bottom: 1rem; }
+      .flash-danger { border-left: 3px solid var(--color-err); background: var(--color-err-bg); padding: 1rem; border-radius: var(--pico-border-radius); margin-bottom: 1rem; }
+      .flash-caution { border-left: 3px solid var(--color-warn); background: var(--color-warn-bg); padding: 1rem; border-radius: var(--pico-border-radius); margin-bottom: 1rem; }
+      .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--pico-muted-border-color); margin-bottom: 1.5rem; }
+      .tabs button { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 0.625rem 1rem; color: var(--pico-muted-color); font-size: 0.875rem; font-weight: 500; cursor: pointer; margin-bottom: -1px; }
+      .tabs button:hover { color: var(--pico-color); background: none; }
+      .tabs button.active { color: var(--pico-primary); border-bottom-color: var(--pico-primary); font-weight: 600; }
       .tab-content { display: none; }
       .tab-content.active { display: block; }
-
-      /* History Timeline */
-      .history-timeline {
-        position: relative;
-        padding-left: 2rem;
-      }
-      .history-timeline::before {
-        content: '';
-        position: absolute;
-        left: 0.5rem;
-        top: 0;
-        bottom: 0;
-        width: 2px;
-        background: linear-gradient(to bottom, #d1d5db 0%, #e5e7eb 100%);
-      }
-      .history-tx-card {
-        position: relative;
-        padding: 1rem 0;
-        border-bottom: 1px solid #f3f4f6;
-        cursor: pointer;
-        transition: background 0.15s;
-      }
-      .history-tx-card:last-child { border-bottom: none; }
-      .history-tx-card:hover { background: #f9fafb; }
-      .history-tx-card::before {
-        content: '';
-        position: absolute;
-        left: -1.625rem;
-        top: 1.125rem;
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        border: 2px solid white;
-        box-shadow: 0 0 0 2px #e5e7eb;
-      }
-      .history-tx-card.op-created::before { background: #10b981; }
-      .history-tx-card.op-updated::before { background: #3b82f6; }
-      .history-tx-card.op-retracted::before { background: #ef4444; }
-      .history-tx-card.op-admin::before { background: #6b7280; }
-      .history-tx-card.op-correction::before { background: #f59e0b; }
-
-      /* Expandable detail */
-      .htx-details {
-        display: none;
-        margin-top: 0.75rem;
-        padding-top: 0.75rem;
-        border-top: 1px solid #e5e7eb;
-      }
-      .history-tx-card.expanded .htx-details { display: block; }
-      .expand-chevron {
-        float: right;
-        font-size: 0.75rem;
-        color: #9ca3af;
-        transition: transform 0.2s;
-      }
-      .history-tx-card.expanded .expand-chevron { transform: rotate(180deg); }
-
-      /* Entity badges */
-      .entity-badge {
-        display: inline-block;
-        padding: 0.125rem 0.5rem;
-        border-radius: 9999px;
-        font-size: 0.6875rem;
-        font-weight: 600;
-        letter-spacing: 0.025em;
-        text-transform: uppercase;
-      }
-      .entity-badge.t-payment { background: #dcfce7; color: #166534; }
-      .entity-badge.t-installment { background: #dbeafe; color: #1e40af; }
-      .entity-badge.t-fee { background: #fef3c7; color: #92400e; }
-      .entity-badge.t-deposit { background: #f3e8ff; color: #6b21a8; }
-      .entity-badge.t-disbursement { background: #fee2e2; color: #991b1b; }
-      .entity-badge.t-contract { background: #e0e7ff; color: #3730a3; }
-      .entity-badge.t-principal-allocation { background: #ffedd5; color: #9a3412; }
-
-      /* Changes table */
-      .changes-table {
-        width: 100%;
-        font-size: 0.8125rem;
-        border-collapse: collapse;
-        margin-top: 0.5rem;
-      }
-      .changes-table th {
-        text-align: left;
-        color: #6b7280;
-        font-weight: 500;
-        padding: 0.25rem 0.5rem;
-        border-bottom: 1px solid #e5e7eb;
-        font-size: 0.75rem;
-      }
-      .changes-table td {
-        padding: 0.25rem 0.5rem;
-        border-bottom: 1px solid #f3f4f6;
-      }
-      .change-old {
-        text-decoration: line-through;
-        color: #dc2626;
-        opacity: 0.7;
-      }
-      .change-new {
-        font-weight: 600;
-        color: #059669;
-      }
-      .change-arrow {
-        color: #9ca3af;
-        padding: 0 0.25rem;
-      }
-
-      /* History filters */
-      .history-filters {
-        display: flex;
-        gap: 1rem;
-        flex-wrap: wrap;
-        margin-bottom: 1rem;
-        padding: 0.75rem 1rem;
-        background: #f9fafb;
-        border-radius: 0.5rem;
-        border: 1px solid #e5e7eb;
-        align-items: flex-end;
-      }
-      .history-filters .filter-group {
-        margin-bottom: 0;
-      }
-      .history-filters .filter-group label {
-        display: block;
-        font-size: 0.6875rem;
-        color: #6b7280;
-        margin-bottom: 0.25rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-      .history-filters input, .history-filters select {
-        padding: 0.375rem 0.5rem;
-        border: 1px solid #d1d5db;
-        border-radius: 0.375rem;
-        font-size: 0.8125rem;
-      }
-
-      /* History pagination */
-      .history-pagination {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 0.75rem 0;
-        font-size: 0.8125rem;
-        color: #6b7280;
-      }
-      .history-pagination a {
-        padding: 0.375rem 0.75rem;
-        border: 1px solid #d1d5db;
-        border-radius: 0.375rem;
-        text-decoration: none;
-        color: #374151;
-        font-weight: 500;
-      }
-      .history-pagination a:hover { background: #f3f4f6; }
-      .history-pagination a.disabled {
-        opacity: 0.5;
-        pointer-events: none;
-      }
-
-      /* History summary line */
-      .htx-summary {
-        font-size: 0.875rem;
-        color: #374151;
-      }
-      .htx-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 0.25rem;
-      }
-      .htx-timestamp {
-        font-size: 0.75rem;
-        color: #9ca3af;
-        font-family: ui-monospace, SFMono-Regular, 'SF Mono', monospace;
-      }
-      .htx-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.75rem;
-        font-size: 0.75rem;
-        color: #6b7280;
-        margin-top: 0.25rem;
-      }
-      .htx-entity-group {
-        margin-bottom: 0.5rem;
-        padding: 0.5rem;
-        background: #f9fafb;
-        border-radius: 0.375rem;
-      }
-      .htx-entity-header {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        margin-bottom: 0.25rem;
-        font-size: 0.8125rem;
-        font-weight: 500;
-      }
-      .htx-op-label {
-        font-size: 0.6875rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-      .htx-op-label.op-created { color: #059669; }
-      .htx-op-label.op-updated { color: #2563eb; }
-      .htx-op-label.op-retracted { color: #dc2626; }
+      .override-fields { display: none; }
+      .override-fields.visible { display: block; }
+      button, [role='button'], input[type='submit'], [type='button'], [type='submit'], [type='reset'] { width: auto !important; }
+      .btn-danger { --pico-background-color: var(--color-err); --pico-border-color: var(--color-err); --pico-color: #fff; }
+      .btn-caution { --pico-background-color: var(--color-warn); --pico-border-color: var(--color-warn); --pico-color: #fff; }
+      .text-right { text-align: right; }
+      td.text-right, th.text-right { font-family: var(--font-mono); font-size: 0.8125rem; }
+      .mono { font-family: var(--font-mono); font-size: 0.8125rem; }
+      .text-muted { color: var(--pico-muted-color); }
+      .mb-0 { margin-bottom: 0 !important; }
+      .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+      .action-bar { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+      .empty-state { text-align: center; padding: 2rem; border: 2px dashed var(--pico-muted-border-color); border-radius: var(--pico-border-radius); color: var(--pico-muted-color); }
+      .empty-state p { margin: 0; }
+      .empty-state p:first-child { font-weight: 600; margin-bottom: 0.25rem; }
+      .party-search-result { padding: 0.5rem 1rem; cursor: pointer; border-bottom: 1px solid var(--pico-muted-border-color); }
+      .party-search-result:hover { background: #f5f5f4; }
+      .party-search-result:last-child { border-bottom: none; }
+      .change-old { text-decoration: line-through; color: var(--color-err); opacity: 0.7; }
+      .change-new { font-weight: 600; color: var(--pico-primary); }
+      input[type='hidden'] { display: none !important; }
+      input[type='number'] { font-family: var(--font-mono); }
     "]]
-   [:body
-    [:div.header
-     [:div.container
-      [:h1 "LMS - Loan Management System"]
-      [:nav.nav
-       [:a {:href "/contracts"} "Contracts"]
-       [:a {:href "/parties"} "Parties"]
-       [:a {:href "/about"} "About"]]]]
-    [:div.container
-     content]]))
+         [:body
+          [:nav.container
+           [:ul [:li [:strong "LMS"]]]
+           [:ul
+            [:li [:a {:href "/contracts"} "Contracts"]]
+            [:li [:a {:href "/parties"} "Parties"]]
+            [:li [:a {:href "/about"} "About"]]]]
+          [:main.container
+           content]]))
 
 ;; ============================================================
 ;; Contract List Components
@@ -884,7 +186,7 @@
     [:div.empty-state
      [:p "No contracts found."]
      [:p.text-muted "Create a contract to get started."]]
-    [:table
+    [:table.striped
      [:thead
       [:tr
        [:th "External ID"]
@@ -900,7 +202,7 @@
          [:td (:customer-name contract)]
          [:td (status-badge (:status contract))]
          [:td.text-right (format-money (:principal contract))]
-         [:td [:a.btn.btn-primary {:href (str "/contracts/" (:id contract))}
+         [:td [:a {:role "button" :href (str "/contracts/" (:id contract))}
                "View"]]])]]))
 
 (defn contract-list-page
@@ -913,10 +215,10 @@
   [contracts]
   (page-layout
    "Contracts"
-   [:div.card
-    [:div {:style "display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;"}
-     [:h2 {:style "margin-bottom: 0;"} "All Contracts"]
-     [:a.btn.btn-success {:href "/contracts/new"} "+ Board Contract"]]
+   [:article
+    [:div.page-header
+     [:h2.mb-0 "All Contracts"]
+     [:a {:role "button" :href "/contracts/new"} "+ Board Contract"]]
     (contract-list-table contracts)]))
 
 ;; ============================================================
@@ -932,35 +234,35 @@
    Returns: Hiccup div"
   [state]
   (let [contract (:contract state)]
-    [:div.card
+    [:div#contract-summary
      [:h2 (str (:external-id contract) " - " (get-in contract [:borrower :legal-name]))]
-     [:div.summary-grid
-      [:div.summary-item
-       [:div.label "Status"]
-       [:div.value (status-badge (:status contract))]]
-      [:div.summary-item
-       [:div.label "Principal"]
-       [:div.value (format-money (:principal contract))]]
-      [:div.summary-item.highlight
-       [:div.label "Outstanding"]
-       [:div.value (format-money (:total-outstanding state))]]
-      [:div.summary-item
-       [:div.label "Credit Balance"]
-       [:div.value (format-money (:credit-balance state))]]
-      [:div.summary-item
-       [:div.label "Deposit Held"]
-       [:div.value (format-money (:deposit-held state))]]
-      [:div.summary-item
-       [:div.label "Start Date"]
-       [:div.value (format-date (:start-date contract))]]
-      [:div.summary-item
-       [:div.label "Maturity Date"]
-       [:div.value (format-date (:maturity-date contract))]]
+     [:div.grid
+      [:article
+       [:small "Status"] [:br]
+       [:strong (status-badge (:status contract))]]
+      [:article
+       [:small "Principal"] [:br]
+       [:strong.mono (format-money (:principal contract))]]
+      [:article
+       [:small "Outstanding"] [:br]
+       [:strong.mono [:mark (format-money (:total-outstanding state))]]]
+      [:article
+       [:small "Credit Balance"] [:br]
+       [:strong.mono (format-money (:credit-balance state))]]]
+     [:div.grid
+      [:article
+       [:small "Deposit Held"] [:br]
+       [:strong.mono (format-money (:deposit-held state))]]
+      [:article
+       [:small "Disbursed"] [:br]
+       [:strong (or (format-date (:disbursed-at contract)) "Pending")]]
+      [:article
+       [:small "Maturity Date"] [:br]
+       [:strong (format-date (:maturity-date contract))]]
       (when (:days-to-first-installment contract)
-        [:div.summary-item
-         [:div.label "Days to 1st Installment"]
-         [:div.value (str (:days-to-first-installment contract) " days")]])]]))
-
+        [:article
+         [:small "Days to 1st Installment"] [:br]
+         [:strong (str (:days-to-first-installment contract) " days")]])]]))
 (defn fees-table
   "Render fees table.
 
@@ -969,11 +271,11 @@
 
    Returns: Hiccup div"
   [fees]
-  [:div.card
+  [:article#fees-section
    [:h2 "Fees"]
    (if (empty? fees)
      [:p.text-muted "No fees."]
-     [:table
+     [:table.striped
       [:thead
        [:tr
         [:th "Type"]
@@ -1000,47 +302,136 @@
 
    Returns: Hiccup div"
   [installments]
-  [:div.card
+  [:div#installments-section
    [:h2 "Installment Schedule"]
-   [:table
-    [:thead
-     [:tr
-      [:th "#"]
-      [:th "Due Date"]
-      [:th.text-right "Remaining Principal"]
-      [:th.text-right "Principal Due"]
-      [:th.text-right "Profit Due"]
-      [:th.text-right "Total Due"]
-      [:th.text-right "Paid"]
-      [:th.text-right "Outstanding"]
-      [:th "Status"]
-      [:th.text-right "Days Late"]]]
-    [:tbody
-     (for [inst installments]
-       [:tr {:key (:id inst)}
-        [:td (:seq inst)]
-        [:td (format-date (:due-date inst))]
-        [:td.text-right (format-money (:remaining-principal inst))]
-        [:td.text-right (format-money (:principal-due inst))]
-        [:td.text-right (format-money (:profit-due inst))]
-        [:td.text-right (format-money (:total-due inst))]
-        [:td.text-right (format-money (:total-paid inst))]
-        [:td.text-right (format-money (:outstanding inst))]
-        [:td (status-badge (:status inst))]
-        [:td.text-right
-         {:style (let [days (:days-delinquent inst)]
-                   (cond
-                     (pos? days) "color: #ef4444; font-weight: 600;"
-                     (neg? days) "color: #9ca3af;"
-                     :else "color: #6b7280;"))}
-         (:days-delinquent inst)]])]]])
+   [:div {:style "overflow-x: auto;"}
+    [:table.striped
+     [:thead
+      [:tr
+       [:th "#"]
+       [:th "Due Date"]
+       [:th.text-right "Remaining Principal"]
+       [:th.text-right "Principal Due"]
+       [:th.text-right "Profit Due"]
+       [:th.text-right "Total Due"]
+       [:th.text-right "Paid"]
+       [:th.text-right "Outstanding"]
+       [:th "Status"]
+       [:th.text-right "Days Late"]]]
+     [:tbody
+      (for [inst installments]
+        [:tr {:key (:id inst)}
+         [:td (:seq inst)]
+         [:td (format-date (:due-date inst))]
+         [:td.text-right (format-money (:remaining-principal inst))]
+         [:td.text-right (format-money (:principal-due inst))]
+         [:td.text-right (format-money (:profit-due inst))]
+         [:td.text-right (format-money (:total-due inst))]
+         [:td.text-right (format-money (:total-paid inst))]
+         [:td.text-right (format-money (:outstanding inst))]
+         [:td (status-badge (:status inst))]
+         [:td.text-right
+          {:style (let [days (:days-delinquent inst)]
+                    (cond
+                      (pos? days) "color: var(--color-err); font-weight: 600;"
+                      :else "color: var(--pico-muted-color);"))}
+          (:days-delinquent inst)]])]]]])
+
+(defn parties-section
+  "Render guarantors and authorized signatories section for contract detail.
+
+   Args:
+   - contract-id: UUID
+   - contract: Contract map from state with :guarantors and :authorized-signatories
+
+   Returns: Hiccup div"
+  [contract-id contract]
+  [:article#parties-section
+   [:h2 "Parties"]
+
+   ;; --- Guarantors ---
+   [:div {:style "margin-bottom: 1.5rem;"}
+    [:h3 {:style "font-size: 1rem; margin-bottom: 0.75rem;"} "Guarantors"]
+    (if (empty? (:guarantors contract))
+      [:p.text-muted "No guarantors."]
+      [:table
+       [:thead
+        [:tr
+         [:th "Name"]
+         [:th "Type"]
+         [:th {:style "width: 5rem;"} ""]]]
+       [:tbody
+        (for [g (:guarantors contract)]
+          [:tr {:key (:id g)}
+           [:td [:a {:href (str "/parties/" (:id g))} (:legal-name g)]]
+           [:td (when (:type g) (str/capitalize (name (:type g))))]
+           [:td
+            [:button.btn-danger
+             {:type "button"
+              "data-on:click" (str "@post('/contracts/" contract-id "/guarantors/" (:id g) "/remove')")}
+             "Remove"]]])]])
+
+    ;; Add guarantor form
+    [:div {:style "margin-top: 0.75rem;"
+           "data-signals:guarantor-party-id" "''"
+           "data-signals:guarantor-search" "''"
+           "data-signals:show-guarantor-results" "false"}
+     [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/guarantors', {contentType: 'form'})")}
+      [:div {:style "display: flex; gap: 0.5rem; align-items: flex-start;"}
+       [:input {:type "hidden" :name "party-id" "data-bind:guarantor-party-id" true}]
+       [:div {:style "flex: 1;"}
+        [:input {:type "text" :autocomplete "off"
+                 :placeholder "Search party by name..."
+                 "data-bind:guarantor-search" true
+                 "data-on:keyup__debounce.300ms" "$showGuarantorResults = true; @get('/api/parties/search?target=guarantor-results&context=guarantor')"}]
+        [:div#guarantor-results
+         {:style "border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); max-height: 200px; overflow-y: auto;"
+          "data-show" "$showGuarantorResults"}]]
+       [:button {:type "submit"} "Add"]]]]]
+
+   ;; --- Authorized Signatories ---
+   [:div
+    [:h3 {:style "font-size: 1rem; margin-bottom: 0.75rem;"} "Authorized Signatories"]
+    (if (empty? (:authorized-signatories contract))
+      [:p.text-muted "No authorized signatories."]
+      [:table
+       [:thead
+        [:tr
+         [:th "Name"]
+         [:th {:style "width: 5rem;"} ""]]]
+       [:tbody
+        (for [s (:authorized-signatories contract)]
+          [:tr {:key (:id s)}
+           [:td [:a {:href (str "/parties/" (:id s))} (:legal-name s)]]
+           [:td
+            [:button.btn-danger
+             {:type "button"
+              "data-on:click" (str "@post('/contracts/" contract-id "/signatories/" (:id s) "/remove')")}
+             "Remove"]]])]])
+
+    ;; Add signatory form
+    [:div {:style "margin-top: 0.75rem;"
+           "data-signals:signatory-party-id" "''"
+           "data-signals:signatory-search" "''"
+           "data-signals:show-signatory-results" "false"}
+     [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/signatories', {contentType: 'form'})")}
+      [:div {:style "display: flex; gap: 0.5rem; align-items: flex-start;"}
+       [:input {:type "hidden" :name "party-id" "data-bind:signatory-party-id" true}]
+       [:div {:style "flex: 1;"}
+        [:input {:type "text" :autocomplete "off"
+                 :placeholder "Search person by name..."
+                 "data-bind:signatory-search" true
+                 "data-on:keyup__debounce.300ms" "$showSignatoryResults = true; @get('/api/parties/search?type=person&target=signatory-results&context=signatory')"}]
+        [:div#signatory-results
+         {:style "border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); max-height: 200px; overflow-y: auto;"
+          "data-show" "$showSignatoryResults"}]]
+       [:button {:type "submit"} "Add"]]]]]])
 
 (defn- format-datetime
   "Format datetime with both date and time for audit trail."
   [date]
   (when date
     (.format (java.text.SimpleDateFormat. "yyyy-MM-dd HH:mm") date)))
-
 
 ;; ============================================================
 ;; Comprehensive History Components (HTMX tab)
@@ -1058,17 +449,6 @@
     :contract "Contract"
     :principal-allocation "Principal Allocation"
     (some-> entity-type name str/capitalize)))
-
-(defn- tx-operation-class
-  "CSS class for a transaction operation."
-  [operation]
-  (case operation
-    :created "op-created"
-    :updated "op-updated"
-    :retracted "op-retracted"
-    :admin "op-admin"
-    :correction "op-correction"
-    "op-updated"))
 
 (defn- entity-operation-summary
   "Generate summary text for an entity change."
@@ -1118,7 +498,7 @@
   "Render a table of attribute changes with before -> after values."
   [changes]
   (when (seq changes)
-    [:table.changes-table
+    [:table
      [:thead
       [:tr
        [:th "Attribute"]
@@ -1132,72 +512,49 @@
           (case operation
             :updated [:span
                       [:span.change-old display-old]
-                      [:span.change-arrow "\u2192"]
+                      " \u2192 "
                       [:span.change-new display-new]]
             :asserted [:span.change-new display-new]
             :retracted [:span.change-old display-old]
             [:span (or display-new display-old)])]])]]))
 
 (defn- history-transaction-card
-  "Render a single transaction card in the history timeline.
-   Expandable: click to show attribute-level changes."
-  [tx idx]
-  (let [{:keys [tx-instant tx-metadata entities operation]} tx
+  "Render a single transaction in the history as a <details> element.
+   Native browser expand/collapse — no JavaScript needed."
+  [tx _idx]
+  (let [{:keys [tx-instant tx-metadata entities]} tx
         author (:tx/author tx-metadata)
-        note (:tx/note tx-metadata)
-        card-id (str "htx-card-" idx)]
-    [:div.history-tx-card
-     {:class (tx-operation-class operation)
-      :onclick (str "document.getElementById('" card-id "').classList.toggle('expanded')")
-      :id card-id}
-     ;; Header: summary + timestamp
-     [:div.htx-header
-      [:span.htx-summary (tx-summary-text tx)]
-      [:span.htx-timestamp (format-datetime tx-instant)]]
-     ;; Chevron indicator
-     [:span.expand-chevron "\u25BC"]
-     ;; Meta row
-     [:div.htx-meta
-      (when author
-        [:span [:span {:style "color: #9ca3af;"} "By: "] author])
-      (when note
-        [:span {:style "font-style: italic; color: #92400e;"}
-         "\"" note "\""])]
-     ;; Expandable details
-     [:div.htx-details
-      (for [[i entity] (map-indexed vector entities)]
-        [:div.htx-entity-group {:key (str (:entity-id entity) "-" i)}
-         ;; Entity header with badge
-         [:div.htx-entity-header
-          [:span.entity-badge {:class (str "t-" (name (:entity-type entity)))}
-           (entity-type-display (:entity-type entity))]
-          (when (:label entity)
-            [:span {:style "color: #374151;"} (:label entity)])
-          [:span.htx-op-label {:class (str "op-" (name (:operation entity)))}
-           (name (:operation entity))]]
-         ;; Attribute changes table
-         (attribute-changes-table (:display-changes entity))])]]))
+        note (:tx/note tx-metadata)]
+    [:details
+     [:summary
+      (tx-summary-text tx)
+      " "
+      [:small (format-datetime tx-instant)]
+      (when author [:small (str " by " author)])
+      (when note [:small [:em (str " \"" note "\"")]])]
+     ;; Entity changes (shown on expand)
+     (for [[i entity] (map-indexed vector entities)]
+       [:div {:key (str (:entity-id entity) "-" i)
+              :style "margin-bottom: 0.5rem;"}
+        [:p [:kbd (entity-type-display (:entity-type entity))]
+         (when (:label entity) (str " " (:label entity)))
+         " " [:small [:em (name (:operation entity))]]]
+        (attribute-changes-table (:display-changes entity))])]))
 
 (defn- history-filters-bar
   "Render filter controls for history tab."
   [contract-id filters]
   (let [{:keys [entity-types from-date to-date]} filters
         base-url (str "/contracts/" contract-id "/history-tab")]
-    [:form.history-filters
-     {:hx-get base-url
-      :hx-target "#history-tab-content"
-      :hx-trigger "change"
-      :hx-include "closest form"}
-     [:div.filter-group
-      [:label "From"]
+    [:fieldset.grid
+     {"data-on:change" (str "@get('" base-url "')")}
+     [:label "From"
       [:input {:type "date" :name "from-date"
                :value (or from-date "")}]]
-     [:div.filter-group
-      [:label "To"]
+     [:label "To"
       [:input {:type "date" :name "to-date"
                :value (or to-date "")}]]
-     [:div.filter-group
-      [:label "Entity Type"]
+     [:label "Entity Type"
       [:select {:name "entity-types"}
        [:option {:value ""} "All"]
        [:option {:value "payment" :selected (= entity-types #{:payment})} "Payments"]
@@ -1206,11 +563,10 @@
        [:option {:value "disbursement" :selected (= entity-types #{:disbursement})} "Disbursements"]
        [:option {:value "deposit" :selected (= entity-types #{:deposit})} "Deposits"]
        [:option {:value "contract" :selected (= entity-types #{:contract})} "Contract"]]]
-     [:div.filter-group
-      [:button.btn.btn-secondary
+     [:label "\u00a0"
+      [:button.secondary
        {:type "button"
-        :style "font-size: 0.75rem; padding: 0.375rem 0.75rem;"
-        :onclick (str "htmx.ajax('GET', '" base-url "', '#history-tab-content')")}
+        "data-on:click" (str "@get('" base-url "')")}
        "Clear"]]]))
 
 (defn- history-pagination-bar
@@ -1225,21 +581,19 @@
                            (str "&entity-types=" (str/join "," (map name entity-types))))
                          (when from-date (str "&from-date=" from-date))
                          (when to-date (str "&to-date=" to-date))))]
-    [:div.history-pagination
-     [:span (str "Showing page " page " of " total-pages
-                 " (" total " transaction" (when (not= 1 total) "s") " total)")]
-     [:div {:style "display: flex; gap: 0.5rem;"}
-      [:a {:href "#"
-           :class (when (<= page 1) "disabled")
-           :hx-get (build-url (max 1 (dec page)))
-           :hx-target "#history-tab-content"} "\u2190 Prev"]
-      [:a {:href "#"
-           :class (when (>= page total-pages) "disabled")
-           :hx-get (build-url (min total-pages (inc page)))
-           :hx-target "#history-tab-content"} "Next \u2192"]]]))
+    [:div {:style "display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 0;"}
+     [:small (str "Showing page " page " of " total-pages
+                  " (" total " transaction" (when (not= 1 total) "s") " total)")]
+     [:div {:role "group"}
+      [:button.secondary {:type "button"
+                          :disabled (<= page 1)
+                          "data-on:click" (str "@get('" (build-url (max 1 (dec page))) "')")} "\u2190 Prev"]
+      [:button.secondary {:type "button"
+                          :disabled (>= page total-pages)
+                          "data-on:click" (str "@get('" (build-url (min total-pages (inc page))) "')")} "Next \u2192"]]]))
 
 (defn history-tab-content
-  "Render the content for the History tab. Returned as HTMX partial.
+  "Render the content for the History tab. Returned as SSE fragment.
 
    Args:
    - contract-id: UUID
@@ -1250,13 +604,11 @@
   [:div#history-tab-content
    ;; Filters
    (history-filters-bar contract-id filters)
-   ;; Timeline
+   ;; Transaction list
    (if (empty? transactions)
-     [:p.text-muted {:style "padding: 2rem; text-align: center;"}
-      "No history found for the selected filters."]
-     [:div.history-timeline
-      (for [[idx tx] (map-indexed vector transactions)]
-        (history-transaction-card tx idx))])
+     [:p [:small "No history found for the selected filters."]]
+     (for [[idx tx] (map-indexed vector transactions)]
+       (history-transaction-card tx idx)))
    ;; Pagination
    (when (> (:total-pages pagination) 1)
      (history-pagination-bar contract-id pagination filters))])
@@ -1273,21 +625,23 @@
 
    Returns: Hiccup div"
   [{:keys [after changes]}]
-  [:div.preview-section
+  [:div#preview-area
    [:h4 "Payment Allocation Preview"]
-   [:div
-    (for [change changes]
-      [:div.preview-item {:key (str (:type change) "-" (:id change))}
-       [:div.label (:description change)]
-       [:div.value (format-money (:amount change))]])
-    [:div.preview-item {:style "font-weight: bold; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 2px solid #d1d5db;"}
-     [:div.label "Outstanding After Payment"]
-     [:div.value (format-money (:total-outstanding after))]]]])
+   [:table
+    [:tbody
+     (for [change changes]
+       [:tr {:key (str (:type change) "-" (:id change))}
+        [:td (:description change)]
+        [:td.text-right (format-money (:amount change))]])]
+    [:tfoot
+     [:tr
+      [:th "Outstanding After Payment"]
+      [:th.text-right (format-money (:total-outstanding after))]]]]])
 
 (defn settlement-result
   "Render settlement calculation breakdown.
 
-   Returned as an HTML fragment via HTMX — swapped into the modal.
+   Returned as an SSE fragment — morphed into the modal via Datastar.
 
    Args:
    - result: Settlement breakdown map from settlement/calculate-settlement
@@ -1303,88 +657,55 @@
                 current-period-start current-period-end accrued-days
                 manual-override?]} result
         has-refund? (and refund-due (pos? refund-due))]
-    [:div.settlement-result
+    [:div#settlement-result-area
      ;; Hero: final amount
-     [:div.settlement-hero {:class (when has-refund? "refund")}
-      [:div.hero-label (if has-refund? "Refund Due to Customer" "Settlement Amount")]
-      [:div.hero-amount
+     [:p {:style "text-align: center; margin-bottom: 1rem;"}
+      [:small (if has-refund? "Refund Due to Customer" "Settlement Amount")]
+      [:br]
+      [:strong {:style "font-size: 2rem;"}
        (str "SAR " (format-money (if has-refund? refund-due settlement-amount)))]]
 
      ;; Waterfall breakdown
-     [:div.settlement-waterfall
-      [:div.settlement-item
-       [:span.s-label [:span.s-sign.plus "+"] "Outstanding Principal"]
-       [:span.s-amount (str "SAR " (format-money outstanding-principal))]]
-
-      [:div.settlement-item
-       [:span.s-label [:span.s-sign.plus "+"] "Accrued Unpaid Profit"]
-       [:span.s-amount (str "SAR " (format-money effective-accrued-unpaid-profit))]]
-      [:div.settlement-item.sub-detail
-       [:span.s-label "Total accrued"]
-       [:span.s-amount (str "SAR " (format-money accrued-profit))]]
-      [:div.settlement-item.sub-detail
-       [:span.s-label "Already paid"]
-       [:span.s-amount (str "SAR " (format-money profit-already-paid))]]
-
-      [:div.settlement-item
-       [:span.s-label [:span.s-sign.plus "+"] "Outstanding Fees"]
-       [:span.s-amount (str "SAR " (format-money outstanding-fees))]]
-
-      (when (pos? penalty-days)
-        [:div.settlement-item
-         [:span.s-label [:span.s-sign.plus "+"]
-          (str "Penalty (" penalty-days " day" (when (> penalty-days 1) "s") ")")]
-         [:span.s-amount (str "SAR " (format-money penalty-amount))]])
-
-      (when (pos? credit-balance)
-        [:div.settlement-item
-         [:span.s-label [:span.s-sign.minus "\u2212"] "Credit Balance"]
-         [:span.s-amount (str "SAR " (format-money credit-balance))]])
-
-      [:div.settlement-divider]
-
-      [:div.settlement-item.total
-       [:span.s-label (if has-refund? "Refund Due" "Settlement Amount")]
-       [:span.s-amount (str "SAR " (format-money (if has-refund? refund-due settlement-amount)))]]]
+     [:table
+      [:thead [:tr [:th "Component"] [:th.text-right "Amount (SAR)"]]]
+      [:tbody
+       [:tr [:td "+ Outstanding Principal"] [:td.text-right (format-money outstanding-principal)]]
+       [:tr [:td "+ Accrued Unpaid Profit"] [:td.text-right (format-money effective-accrued-unpaid-profit)]]
+       [:tr [:td [:small "  Total accrued"]] [:td.text-right [:small (format-money accrued-profit)]]]
+       [:tr [:td [:small "  Already paid"]] [:td.text-right [:small (format-money profit-already-paid)]]]
+       [:tr [:td "+ Outstanding Fees"] [:td.text-right (format-money outstanding-fees)]]
+       (when (pos? penalty-days)
+         [:tr [:td (str "+ Penalty (" penalty-days " day" (when (> penalty-days 1) "s") ")")] [:td.text-right (format-money penalty-amount)]])
+       (when (pos? credit-balance)
+         [:tr [:td "\u2212 Credit Balance"] [:td.text-right (format-money credit-balance)]])]
+      [:tfoot
+       [:tr [:th (if has-refund? "Refund Due" "Settlement Amount")]
+        [:th.text-right (format-money (if has-refund? refund-due settlement-amount))]]]]
 
      ;; Manual override indicator
      (when manual-override?
-       [:div {:style "text-align: center;"}
-        [:span.settlement-override-badge "Manual override applied to accrued unpaid profit"]])
+       [:p [:small [:em "Manual override applied to accrued unpaid profit"]]])
 
      ;; Period metadata
-     [:div.settlement-period {:style "margin-top: 0.75rem;"}
-      (when current-period-start
-        [:span.sp-item
-         [:span.sp-label "Period start:"]
-         [:span.sp-value (format-date current-period-start)]])
-      (when current-period-end
-        [:span.sp-item
-         [:span.sp-label "Period end:"]
-         [:span.sp-value (format-date current-period-end)]])
-      [:span.sp-item
-       [:span.sp-label "Accrued days:"]
-       [:span.sp-value (str accrued-days)]]
-      [:span.sp-item
-       [:span.sp-label "Unearned profit:"]
-       [:span.sp-value (str "SAR " (format-money unearned-profit))]]]]))
+     [:p [:small
+          (when current-period-start (str "Period start: " (format-date current-period-start) " | "))
+          (when current-period-end (str "Period end: " (format-date current-period-end) " | "))
+          (str "Accrued days: " accrued-days " | ")
+          (str "Unearned profit: SAR " (format-money unearned-profit))]]]))
 
 (defn payment-form
-  "Render payment recording form with HTMX preview.
+  "Render payment recording form with Datastar preview.
 
    Args:
    - contract-id: UUID of contract
 
    Returns: Hiccup form"
   [contract-id]
-  [:div#payment-modal.modal
-   [:div.modal-content
-    [:div.modal-header
-     [:h3 "Record Payment"]]
-    [:form {:method "post"
-            :action (str "/contracts/" contract-id "/record-payment")}
-     [:div.form-group
-      [:label {:for "amount"} "Payment Amount (SAR)"]
+  [:dialog#payment-modal {:data-attr "{'open': $showPaymentModal}"}
+   [:article
+    [:header [:h3 "Record Payment"]]
+    [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/record-payment', {contentType: 'form'})")}
+     [:label {:for "amount"} "Payment Amount (SAR)"
       [:input {:type "number"
                :id "amount"
                :name "amount"
@@ -1392,34 +713,30 @@
                :min "0.01"
                :required true
                :placeholder "e.g., 500000.00"}]]
-     [:div.form-group
-      [:label {:for "reference"} "Payment Reference"]
+     [:label {:for "reference"} "Payment Reference"
       [:input {:type "text"
                :id "reference"
                :name "reference"
                :required true
                :placeholder "e.g., PAY-12345"}]]
-     [:div.form-group
-      [:label {:for "original-date"} "Payment Date"]
+     [:label {:for "original-date"} "Payment Date"
       [:input {:type "date"
                :id "original-date"
                :name "original-date"
                :required true
                :value (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") (java.util.Date.))}]]
-     [:div.form-group
-      [:label {:for "note"} "Note (Optional)"]
+     [:label {:for "note"} "Note (Optional)"
       [:textarea {:id "note"
                   :name "note"
                   :rows "3"
-                  :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem; font-family: inherit;"
                   :placeholder "e.g., Payment received via bank transfer from account ending in 1234"}]]
      [:div#preview-area]
-     [:div.modal-actions
-      [:button.btn.btn-secondary
+     [:footer
+      [:button.secondary
        {:type "button"
-        :onclick "document.getElementById('payment-modal').classList.remove('active')"}
+        "data-on:click" "$showPaymentModal = false"}
        "Cancel"]
-      [:button.btn.btn-success
+      [:button
        {:type "submit"}
        "Record Payment"]]]]])
 
@@ -1434,44 +751,38 @@
 
    Returns: Hiccup modal"
   [contract-id]
-  [:div#retract-payment-modal.modal
-   [:div.modal-content
-    [:div.modal-header
-     [:h3 "Retract Payment"]]
-    [:form {:method "post"
-            :action (str "/contracts/" contract-id "/retract-payment")}
+  [:dialog#retract-payment-modal {:data-attr "{'open': $showRetractPaymentModal}"}
+   [:article
+    [:header [:h3 "Retract Payment"]]
+    [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/retract-payment', {contentType: 'form'})")}
      [:input {:type "hidden"
-              :id "retract-payment-id"
-              :name "payment-id"}]
+              :name "payment-id"
+              "data-bind:retract-payment-id" true}]
      [:p "This will remove the payment as a data correction. Use this for recording errors (wrong amount, duplicate, wrong contract)."]
-     [:p {:style "font-size: 0.875rem; color: #6b7280; margin-top: 0.5rem;"}
-      "For real money returned to customer, use a refund disbursement instead."]
-     [:div#retract-payment-details {:style "margin: 1rem 0; padding: 1rem; background-color: #fef3c7; border-radius: 0.375rem; border: 1px solid #fcd34d;"}]
-     [:div.form-group
-      [:label {:for "retract-reason"} "Reason for Correction"]
+     [:p [:small "For real money returned to customer, use a refund disbursement instead."]]
+     [:div.flash-caution
+      [:p [:strong "Reference: "] [:span {:data-text "$retractRef"}]]
+      [:p [:strong "Amount: SAR "] [:span {:data-text "$retractAmount"}]]]
+     [:label {:for "retract-reason"} "Reason for Correction"
       [:select {:id "retract-reason"
                 :name "reason"
-                :required true
-                :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;"}
+                :required true}
        [:option {:value ""} "Select reason..."]
        [:option {:value "correction"} "Correction (wrong amount)"]
        [:option {:value "duplicate-removal"} "Duplicate Removal"]
        [:option {:value "erroneous-entry"} "Erroneous Entry (wrong contract)"]]]
-     [:div.form-group
-      [:label {:for "retract-note"} "Note (Optional)"]
+     [:label {:for "retract-note"} "Note (Optional)"
       [:textarea {:id "retract-note"
                   :name "note"
                   :rows "2"
-                  :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem; font-family: inherit;"
                   :placeholder "e.g., Duplicate of FT-ANB-123"}]]
-     [:div.modal-actions
-      [:button.btn.btn-secondary
+     [:footer
+      [:button.secondary
        {:type "button"
-        :onclick "closeRetractPaymentModal()"}
+        "data-on:click" "$showRetractPaymentModal = false"}
        "Cancel"]
-      [:button.btn.btn-secondary
-       {:type "submit"
-        :style "background-color: #f59e0b;"}
+      [:button.btn-caution
+       {:type "submit"}
        "Retract Payment"]]]]])
 
 (defn retract-contract-modal
@@ -1487,18 +798,14 @@
 
    Returns: Hiccup modal"
   [contract-id external-id]
-  [:div#retract-contract-modal.modal
-   [:div.modal-content
-    [:div.modal-header
-     [:h3 {:style "color: #991b1b;"} "Delete Contract"]]
-    [:form {:method "post"
-            :action (str "/contracts/" contract-id "/retract-contract")}
-     [:div {:style "padding: 1rem; margin-bottom: 1rem; border-radius: 0.375rem; background-color: #fef2f2; border: 1px solid #fca5a5;"}
-      [:p {:style "font-weight: 600; color: #991b1b; margin-bottom: 0.5rem;"}
-       "This will permanently retract the following contract and all its data:"]
-      [:p {:style "font-family: ui-monospace, monospace; font-size: 1.125rem; color: #111827; font-weight: 700;"}
-       external-id]
-      [:ul {:style "margin-top: 0.75rem; margin-left: 1.5rem; font-size: 0.875rem; color: #991b1b;"}
+  [:dialog#retract-contract-modal {:data-attr "{'open': $showRetractContractModal}"}
+   [:article
+    [:header [:h3 "Delete Contract"]]
+    [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/retract-contract', {contentType: 'form'})")}
+     [:div.flash-danger
+      [:p [:strong "This will permanently retract the following contract and all its data:"]]
+      [:p [:strong external-id]]
+      [:ul
        [:li "Contract record"]
        [:li "All fees"]
        [:li "All installments"]
@@ -1506,34 +813,28 @@
        [:li "All disbursements"]
        [:li "All deposits"]
        [:li "All principal allocations"]]]
-     [:p {:style "font-size: 0.875rem; color: #6b7280; margin-bottom: 1rem;"}
-      "Use this only for data corrections (contract boarded in error, duplicate, wrong customer). "
-      "Datomic history preserves retracted data for audit purposes."]
-     [:div.form-group
-      [:label {:for "retract-contract-reason"} "Reason for Correction *"]
+     [:p [:small "Use this only for data corrections (contract boarded in error, duplicate, wrong customer). "
+          "Datomic history preserves retracted data for audit purposes."]]
+     [:label {:for "retract-contract-reason"} "Reason for Correction *"
       [:select {:id "retract-contract-reason"
                 :name "reason"
-                :required true
-                :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;"}
+                :required true}
        [:option {:value ""} "Select reason..."]
        [:option {:value "correction"} "Correction (wrong data)"]
        [:option {:value "duplicate-removal"} "Duplicate Removal"]
        [:option {:value "erroneous-entry"} "Erroneous Entry (wrong customer/contract)"]]]
-     [:div.form-group
-      [:label {:for "retract-contract-note"} "Note (Optional)"]
+     [:label {:for "retract-contract-note"} "Note (Optional)"
       [:textarea {:id "retract-contract-note"
                   :name "note"
                   :rows "2"
-                  :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem; font-family: inherit;"
                   :placeholder "e.g., Contract boarded against wrong customer CR-456"}]]
-     [:div.modal-actions
-      [:button.btn.btn-secondary
+     [:footer
+      [:button.secondary
        {:type "button"
-        :onclick "document.getElementById('retract-contract-modal').classList.remove('active')"}
+        "data-on:click" "$showRetractContractModal = false"}
        "Cancel"]
-      [:button.btn
-       {:type "submit"
-        :style "background-color: #dc2626; color: white;"}
+      [:button.btn-danger
+       {:type "submit"}
        "Delete Contract"]]]]])
 
 (defn settlement-form
@@ -1548,22 +849,17 @@
 
    Returns: Hiccup modal div"
   [contract-id]
-  [:div#settlement-modal.modal
-   [:div.modal-content
-    [:div.modal-header
-     [:h3 "Settlement Calculator"]]
-    [:form {:hx-post (str "/contracts/" contract-id "/calculate-settlement")
-            :hx-target "#settlement-result-area"
-            :hx-swap "innerHTML"}
-     [:div.form-group
-      [:label {:for "settlement-date"} "Settlement Date"]
+  [:dialog#settlement-modal {:data-attr "{'open': $showSettlementModal}"}
+   [:article
+    [:header [:h3 "Settlement Calculator"]]
+    [:form {"data-on:submit" (str "@post('" "/contracts/" contract-id "/calculate-settlement', {contentType: 'form'})")}
+     [:label {:for "settlement-date"} "Settlement Date"
       [:input {:type "date"
                :id "settlement-date"
                :name "settlement-date"
                :required true
                :value (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") (java.util.Date.))}]]
-     [:div.form-group
-      [:label {:for "penalty-days"} "Penalty Days"]
+     [:label {:for "penalty-days"} "Penalty Days"
       [:input {:type "number"
                :id "penalty-days"
                :name "penalty-days"
@@ -1572,25 +868,24 @@
                :required true
                :value "0"
                :placeholder "0"}]]
-     [:div.form-group
-      [:label.override-toggle
-       [:input {:type "checkbox"
-                :id "override-toggle"
-                :onchange "document.getElementById('override-fields').classList.toggle('visible', this.checked); if(!this.checked) document.getElementById('manual-override').value = '';"}]
-       "Manual override for accrued unpaid profit"]
-      [:div#override-fields.override-fields
-       [:input {:type "number"
-                :id "manual-override"
-                :name "manual-override"
-                :step "0.01"
-                :min "0"
-                :placeholder "Override amount (SAR)"}]]]
-     [:div.modal-actions
-      [:button.btn.btn-secondary
+     [:label
+      [:input {:type "checkbox"
+               :id "override-toggle"
+               "data-bind:override-toggle" true}]
+      "Manual override for accrued unpaid profit"]
+     [:div#override-fields.override-fields {:data-class "{'visible': $overrideToggle}"}
+      [:input {:type "number"
+               :id "manual-override"
+               :name "manual-override"
+               :step "0.01"
+               :min "0"
+               :placeholder "Override amount (SAR)"}]]
+     [:footer
+      [:button.secondary
        {:type "button"
-        :onclick "document.getElementById('settlement-modal').classList.remove('active'); document.getElementById('settlement-result-area').innerHTML = '';"}
+        "data-on:click" "$showSettlementModal = false"}
        "Close"]
-      [:button.btn.btn-settlement
+      [:button
        {:type "submit"}
        "Calculate"]]]
     [:div#settlement-result-area]]])
@@ -1629,180 +924,144 @@
                                (reduce + 0M))
         initial-deductions (+ initial-fee-total deposit-needed)
         initial-disbursement (max 0M (- principal initial-deductions))]
-    [:div#origination-modal.modal
-     [:div.modal-content
-      [:div.modal-header
-       [:h3 "Originate Contract"]]
-      [:p {:style "font-size: 0.875rem; color: #6b7280; margin-bottom: 1rem;"}
-       "Select deductions from principal. Disbursement updates automatically."]
+    (let [;; Build signals map for all checkboxes
+          indexed-fees (map-indexed vector fees)
+          fee-signals (str/join ", "
+                                (for [[i {:keys [due-date]}] indexed-fees
+                                      :let [due-today? (not (.after ^java.util.Date due-date today))]]
+                                  (str "origFee" i ": " (if due-today? "true" "false"))))
+          deposit-signal (when (pos? deposit-needed) "origDeposit: true")
+          all-signals (str/join ", " (remove str/blank? [fee-signals
+                                                         deposit-signal
+                                                         "origPrepayment: 0"]))
+          ;; Build the disbursement effect expression
+          fee-sum-expr (str/join ""
+                                 (for [[i {:keys [amount]}] indexed-fees]
+                                   (str "if($origFee" i ") t+=" (fmt-val amount) ";")))
+          deposit-expr (when (pos? deposit-needed)
+                         (str "if($origDeposit) t+=" (fmt-val deposit-needed) ";"))
+          effect-expr (str "var t=0;"
+                           fee-sum-expr
+                           (or deposit-expr "")
+                           "t+=parseFloat($origPrepayment)||0;"
+                           "var d=Math.max(0," (fmt-val principal) "-t).toFixed(2);"
+                           "document.getElementById('orig-disbursement-display').textContent='SAR '+Number(d).toLocaleString('en',{minimumFractionDigits:2});"
+                           "document.getElementById('orig-disbursement-value').value=d;")]
+      [:dialog#origination-modal {:data-attr "{'open': $showOriginationModal}"
+                                  :data-signals (str "{" all-signals "}")}
+       [:article
+        [:header [:h3 "Originate Contract"]]
+        [:p [:small "Select deductions from principal. Disbursement updates automatically."]]
 
-      [:form {:method "post"
-              :action (str "/contracts/" contract-id "/originate")}
+        [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/originate', {contentType: 'form'})")}
 
-       ;; Principal display
-       [:div.preview-section
-        [:div.preview-item
-         [:div.label "Principal"]
-         [:div.value (str "SAR " (format-money principal))]]]
+         ;; Principal display
+         [:table
+          [:tbody
+           [:tr [:td "Principal"] [:td.text-right [:strong (str "SAR " (format-money principal))]]]]]
 
-       ;; Deductions from principal
-       [:div {:style "margin: 1rem 0; padding: 1rem; background: #f9fafb; border-radius: 0.5rem;"}
-        [:h4 {:style "margin: 0 0 0.75rem 0; font-size: 0.875rem; color: #374151;"}
-         "Deductions from Principal"]
+         ;; Deductions from principal
+         [:fieldset
+          [:legend "Deductions from Principal"]
 
-        ;; Per-fee checkboxes
-        (when (seq fees)
-          [:div {:style "margin-bottom: 0.75rem;"}
-           (for [{:keys [id type amount due-date]} fees
-                 :let [fee-due-today? (not (.after ^java.util.Date due-date today))
-                       checkbox-id (str "fee-" id)]]
-             [:div {:style "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0;"
-                    :key (str id)}
-              [:input {:type "checkbox"
-                       :id checkbox-id
-                       :class "orig-fee-checkbox"
-                       :data-amount (fmt-val amount)
-                       :checked fee-due-today?
-                       :onchange "updateOrigDisbursement()"}]
-              [:input {:type "hidden" :class "orig-fee-id-input" :disabled true
-                       :name "settle-fee-id[]" :value (str id)
-                       :data-checkbox checkbox-id}]
-              [:input {:type "hidden" :class "orig-fee-amount-input" :disabled true
-                       :name "settle-fee-amount[]" :value (fmt-val amount)
-                       :data-checkbox checkbox-id}]
+          ;; Per-fee checkboxes
+          (when (seq fees)
+            (for [[i {:keys [id type amount due-date]}] indexed-fees
+                  :let [signal-name (str "origFee" i)
+                        checkbox-id (str "fee-" id)]]
               [:label {:for checkbox-id
-                       :style "flex: 1; display: flex; justify-content: space-between; cursor: pointer;"}
-               [:span (str "Fee: " (name type)
-                           (when due-date (str " (due " (fmt-date due-date) ")")))]
-               [:span {:style "font-weight: 500;"} (str "SAR " (format-money amount))]]])])
+                       :key (str id)
+                       :style "display: flex; justify-content: space-between; cursor: pointer;"}
+               [:span
+                [:input {:type "checkbox"
+                         :id checkbox-id
+                         :data-bind (keyword signal-name)}]
+                [:input {:type "hidden"
+                         :name "settle-fee-id[]" :value (str id)
+                         :data-attr (str "{'disabled': !$" signal-name "}")}]
+                [:input {:type "hidden"
+                         :name "settle-fee-amount[]" :value (fmt-val amount)
+                         :data-attr (str "{'disabled': !$" signal-name "}")}]
+                (str "Fee: " (name type)
+                     (when due-date (str " (due " (fmt-date due-date) ")")))]
+               [:span [:strong (str "SAR " (format-money amount))]]]))
 
-        ;; Deposit checkbox
-        (when (pos? deposit-needed)
-          [:div {:style "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0;
-                         border-top: 1px solid #e5e7eb; margin-top: 0.25rem; padding-top: 0.625rem;"}
-           [:input {:type "checkbox"
-                    :id "orig-deposit-checkbox"
-                    :checked true
-                    :data-amount (fmt-val deposit-needed)
-                    :onchange "updateOrigDisbursement()"}]
-           [:input {:type "hidden" :name "deposit-from-funding" :disabled true
-                    :id "orig-deposit-hidden" :value (fmt-val deposit-needed)}]
-           [:label {:for "orig-deposit-checkbox"
-                    :style "flex: 1; display: flex; justify-content: space-between; cursor: pointer;"}
-            [:span "Security Deposit"]
-            [:span {:style "font-weight: 500;"} (str "SAR " (format-money deposit-needed))]]])
+          ;; Deposit checkbox
+          (when (pos? deposit-needed)
+            [:label {:for "orig-deposit-checkbox"
+                     :style "display: flex; justify-content: space-between; cursor: pointer;"}
+             [:span
+              [:input {:type "checkbox"
+                       :id "orig-deposit-checkbox"
+                       "data-bind:orig-deposit" true}]
+              [:input {:type "hidden" :name "deposit-from-funding"
+                       :value (fmt-val deposit-needed)
+                       :data-attr "{'disabled': !$origDeposit}"}]
+              "Security Deposit"]
+             [:span [:strong (str "SAR " (format-money deposit-needed))]]])
 
-        ;; Installment prepayment
-        [:div {:style "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0;
-                       border-top: 1px solid #e5e7eb; margin-top: 0.25rem; padding-top: 0.625rem;"}
-         [:label {:for "orig-inst-prepayment" :style "flex: 1;"}
-          "Installment prepayment"]
-         [:input {:type "number"
-                  :id "orig-inst-prepayment"
-                  :name "installment-prepayment"
-                  :step "0.01" :min "0"
-                  :placeholder "0.00"
-                  :style "width: 10rem; text-align: right;"
-                  :onchange "updateOrigDisbursement()"
-                  :oninput "updateOrigDisbursement()"}]]]
+          ;; Installment prepayment
+          [:label {:for "orig-inst-prepayment"
+                   :style "display: flex; justify-content: space-between; align-items: center;"}
+           "Installment prepayment"
+           [:input {:type "number"
+                    :id "orig-inst-prepayment"
+                    :name "installment-prepayment"
+                    :step "0.01" :min "0"
+                    :placeholder "0.00"
+                    :style "width: 10rem; text-align: right;"
+                    "data-bind:orig-prepayment" true}]]]
 
-       ;; Summary
-       [:div.preview-section {:style "margin-top: 0.75rem;"}
-        [:div.preview-item {:style "font-weight: bold; padding-top: 0.5rem; border-top: 2px solid #d1d5db;"}
-         [:div.label "Merchant Disbursement"]
-         [:div.value {:id "orig-disbursement-display"} (str "SAR " (format-money initial-disbursement))]]
-        [:input {:type "hidden" :name "disbursement-amount" :id "orig-disbursement-value"
-                 :value (fmt-val initial-disbursement)}]
-        (when (pos? excess-return)
-          [:div.preview-item
-           [:div.label "Plus: Excess return to customer"]
-           [:div.value (str "SAR " (format-money excess-return))]])
-        (when (pos? excess-return)
-          [:input {:type "hidden" :name "excess-return" :value (fmt-val excess-return)}])]
+         ;; Summary with data-effect for reactive calculation
+         [:table {:style "margin-top: 0.75rem;"}
+          [:div {:data-effect effect-expr}]
+          [:tfoot
+           [:tr [:th "Merchant Disbursement"]
+            [:th.text-right {:id "orig-disbursement-display"} (str "SAR " (format-money initial-disbursement))]]
+           [:input {:type "hidden" :name "disbursement-amount" :id "orig-disbursement-value"
+                    :value (fmt-val initial-disbursement)}]
+           (when (pos? excess-return)
+             [:tr [:td "Plus: Excess return to customer"]
+              [:td.text-right (str "SAR " (format-money excess-return))]])
+           (when (pos? excess-return)
+             [:input {:type "hidden" :name "excess-return" :value (fmt-val excess-return)}])]]
 
-       ;; User inputs (date, reference, IBAN, bank)
-       [:div {:style "border-top: 1px solid #e5e7eb; padding-top: 1rem; margin-top: 1rem;"}
-        [:div.form-group
-         [:label {:for "orig-date"} "Origination Date *"]
-         [:input {:type "date"
-                  :id "orig-date"
-                  :name "date"
-                  :required true
-                  :value (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") (java.util.Date.))}]]
-        [:div.form-group
-         [:label {:for "orig-disb-reference"} "Wire Reference *"]
-         [:input {:type "text"
-                  :id "orig-disb-reference"
-                  :name "disbursement-reference"
-                  :required true
-                  :placeholder "e.g., WT-001"}]]
-        [:div {:style "display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"}
-         [:div.form-group
-          [:label {:for "orig-disb-iban"} "Destination IBAN"]
+         ;; User inputs (date, reference, IBAN, bank)
+         [:hr]
+         [:label {:for "orig-date"} "Origination Date *"
+          [:input {:type "date"
+                   :id "orig-date"
+                   :name "date"
+                   :required true
+                   :value (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") (java.util.Date.))}]]
+         [:label {:for "orig-disb-reference"} "Wire Reference *"
           [:input {:type "text"
-                   :id "orig-disb-iban"
-                   :name "disbursement-iban"
-                   :value (or disb-iban "")
-                   :placeholder "e.g., SA242000..."}]]
-         [:div.form-group
-          [:label {:for "orig-disb-bank"} "Destination Bank"]
-          [:input {:type "text"
-                   :id "orig-disb-bank"
-                   :name "disbursement-bank"
-                   :value (or disb-bank "")
-                   :placeholder "e.g., ANB"}]]]]
+                   :id "orig-disb-reference"
+                   :name "disbursement-reference"
+                   :required true
+                   :placeholder "e.g., WT-001"}]]
+         [:div.grid
+          [:label {:for "orig-disb-iban"} "Destination IBAN"
+           [:input {:type "text"
+                    :id "orig-disb-iban"
+                    :name "disbursement-iban"
+                    :value (or disb-iban "")
+                    :placeholder "e.g., SA242000..."}]]
+          [:label {:for "orig-disb-bank"} "Destination Bank"
+           [:input {:type "text"
+                    :id "orig-disb-bank"
+                    :name "disbursement-bank"
+                    :value (or disb-bank "")
+                    :placeholder "e.g., ANB"}]]]
 
-       [:div.modal-actions
-        [:button.btn.btn-secondary
-         {:type "button"
-          :onclick "document.getElementById('origination-modal').classList.remove('active')"}
-         "Cancel"]
-        [:button.btn.btn-success
-         {:type "submit"}
-         "Originate"]]]
-
-      ;; JavaScript for dynamic disbursement calculation and hidden input toggling
-      [:script
-       (str "
-function updateOrigDisbursement() {
-  var principal = " (fmt-val principal) ";
-  var total = 0;
-
-  // Sum checked fee amounts
-  document.querySelectorAll('.orig-fee-checkbox').forEach(function(cb) {
-    if (cb.checked) {
-      total += parseFloat(cb.dataset.amount);
-    }
-  });
-
-  // Toggle hidden inputs for fees (disabled inputs are not submitted)
-  document.querySelectorAll('.orig-fee-id-input, .orig-fee-amount-input').forEach(function(inp) {
-    var cb = document.getElementById(inp.dataset.checkbox);
-    inp.disabled = !cb.checked;
-  });
-
-  // Deposit
-  var depCb = document.getElementById('orig-deposit-checkbox');
-  var depHidden = document.getElementById('orig-deposit-hidden');
-  if (depCb && depCb.checked) {
-    total += parseFloat(depCb.dataset.amount);
-    if (depHidden) depHidden.disabled = false;
-  } else {
-    if (depHidden) depHidden.disabled = true;
-  }
-
-  // Installment prepayment
-  var prepay = parseFloat(document.getElementById('orig-inst-prepayment').value) || 0;
-  total += prepay;
-
-  var disbursement = Math.max(0, principal - total).toFixed(2);
-  document.getElementById('orig-disbursement-display').textContent = 'SAR ' + parseFloat(disbursement).toLocaleString('en', {minimumFractionDigits: 2});
-  document.getElementById('orig-disbursement-value').value = disbursement;
-}
-
-// Initialize on load
-updateOrigDisbursement();
-")]]]))
+         [:footer
+          [:button.secondary
+           {:type "button"
+            "data-on:click" "$showOriginationModal = false"}
+           "Cancel"]
+          [:button
+           {:type "submit"}
+           "Originate"]]]]])))
 (defn retract-origination-modal
   "Render modal for retracting origination entities (data correction).
 
@@ -1815,119 +1074,103 @@ updateOrigDisbursement();
 
    Returns: Hiccup modal"
   [contract-id]
-  [:div#retract-origination-modal.modal
-   [:div.modal-content
-    [:div.modal-header
-     [:h3 {:style "color: #92400e;"} "Retract Origination"]]
-    [:form {:method "post"
-            :action (str "/contracts/" contract-id "/retract-origination")}
-     [:div {:style "padding: 1rem; margin-bottom: 1rem; border-radius: 0.375rem; background-color: #fffbeb; border: 1px solid #fcd34d;"}
-      [:p {:style "font-weight: 600; color: #92400e; margin-bottom: 0.5rem;"}
-       "This will retract all origination entities:"]
-      [:ul {:style "margin-left: 1.5rem; font-size: 0.875rem; color: #92400e;"}
+  [:dialog#retract-origination-modal {:data-attr "{'open': $showRetractOriginationModal}"}
+   [:article
+    [:header [:h3 "Retract Origination"]]
+    [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/retract-origination', {contentType: 'form'})")}
+     [:div.flash-caution
+      [:p [:strong "This will retract all origination entities:"]]
+      [:ul
        [:li "Principal allocations (fee deductions from funding)"]
        [:li "Funding disbursements"]
        [:li "Deposits from funding"]
        [:li "Excess return disbursements"]]]
-     [:p {:style "font-size: 0.875rem; color: #6b7280; margin-bottom: 1rem;"}
-      "Use this only for data corrections (wrong amounts, duplicate origination). "
-      "Datomic history preserves retracted data for audit purposes."]
-     [:div.form-group
-      [:label {:for "retract-orig-reason"} "Reason for Correction *"]
+     [:p [:small "Use this only for data corrections (wrong amounts, duplicate origination). "
+          "Datomic history preserves retracted data for audit purposes."]]
+     [:label {:for "retract-orig-reason"} "Reason for Correction *"
       [:select {:id "retract-orig-reason"
                 :name "reason"
-                :required true
-                :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;"}
+                :required true}
        [:option {:value ""} "Select reason..."]
        [:option {:value "correction"} "Correction (wrong amounts)"]
        [:option {:value "duplicate-removal"} "Duplicate Origination"]
        [:option {:value "erroneous-entry"} "Erroneous Entry"]]]
-     [:div.form-group
-      [:label {:for "retract-orig-note"} "Note (Optional)"]
+     [:label {:for "retract-orig-note"} "Note (Optional)"
       [:textarea {:id "retract-orig-note"
                   :name "note"
                   :rows "2"
-                  :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem; font-family: inherit;"
                   :placeholder "e.g., Wrong fee deduction amount, re-originating"}]]
-     [:div.modal-actions
-      [:button.btn.btn-secondary
+     [:footer
+      [:button.secondary
        {:type "button"
-        :onclick "document.getElementById('retract-origination-modal').classList.remove('active')"}
+        "data-on:click" "$showRetractOriginationModal = false"}
        "Cancel"]
-      [:button.btn
-       {:type "submit"
-        :style "background-color: #f59e0b; color: white;"}
+      [:button.btn-caution
+       {:type "submit"}
        "Retract Origination"]]]]])
 
 (defn generate-clearance-letter-modal
   "Modal form for generating a clearance letter."
   [contract-id]
-  [:div#generate-clearance-letter-modal.modal
-   [:div.modal-content
-    [:div.modal-header
-     [:h3 "Generate Clearance Letter"]
-     [:button.modal-close {:onclick "document.getElementById('generate-clearance-letter-modal').classList.remove('active')"} "×"]]
-    [:form {:method "post" :action (str "/contracts/" contract-id "/generate-clearance-letter")}
-     [:div.form-group
-      [:label "Settlement Date"]
+  [:dialog#generate-clearance-letter-modal {:data-attr "{'open': $showClearanceLetterModal}"}
+   [:article
+    [:header [:h3 "Generate Clearance Letter"]]
+    [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/generate-clearance-letter', {contentType: 'form'})")}
+     [:label "Settlement Date"
       [:input {:type "date" :name "settlement-date" :required true}]]
-     [:div.form-group
-      [:label "Penalty Days"]
+     [:label "Penalty Days"
       [:input {:type "number" :name "penalty-days" :min "0" :value "0" :required true}]]
-     [:div {:style "display: flex; gap: 0.5rem; justify-content: flex-end;"}
-      [:button.btn.btn-secondary
+     [:footer
+      [:button.secondary
        {:type "button"
-        :onclick "document.getElementById('generate-clearance-letter-modal').classList.remove('active')"}
+        "data-on:click" "$showClearanceLetterModal = false"}
        "Cancel"]
-      [:button.btn.btn-primary {:type "submit"} "Generate"]]]]])
+      [:button {:type "submit"} "Generate"]]]]])
 
 (defn generate-statement-modal
   "Modal form for generating a statement."
   [contract-id]
-  [:div#generate-statement-modal.modal
-   [:div.modal-content
-    [:div.modal-header
-     [:h3 "Generate Statement"]
-     [:button.modal-close {:onclick "document.getElementById('generate-statement-modal').classList.remove('active')"} "×"]]
-    [:form {:method "post" :action (str "/contracts/" contract-id "/generate-statement")}
-     [:div.form-group
-      [:label "Period Start"]
+  [:dialog#generate-statement-modal {:data-attr "{'open': $showStatementModal}"}
+   [:article
+    [:header [:h3 "Generate Statement"]]
+    [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/generate-statement', {contentType: 'form'})")}
+     [:label "Period Start"
       [:input {:type "date" :name "period-start" :required true}]]
-     [:div.form-group
-      [:label "Period End"]
+     [:label "Period End"
       [:input {:type "date" :name "period-end" :required true}]]
-     [:div {:style "display: flex; gap: 0.5rem; justify-content: flex-end;"}
-      [:button.btn.btn-secondary
+     [:footer
+      [:button.secondary
        {:type "button"
-        :onclick "document.getElementById('generate-statement-modal').classList.remove('active')"}
+        "data-on:click" "$showStatementModal = false"}
        "Cancel"]
-      [:button.btn.btn-primary {:type "submit"} "Generate"]]]]])
+      [:button {:type "submit"} "Generate"]]]]])
 
 (defn document-list-section
   "Display all documents for a contract with download buttons."
   [contract-id documents]
-  [:div {:style "padding: 1rem;"}
+  [:div#documents-section {:style "padding: 1rem;"}
    [:h3 "Documents"]
 
    ;; Action buttons for generating documents
    [:div {:style "margin-bottom: 1.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;"}
-    [:button.btn.btn-primary
+    [:button
      {:type "button"
-      :onclick "document.getElementById('generate-clearance-letter-modal').classList.add('active')"}
+      "data-on:click" "$showClearanceLetterModal = true"}
      "+ Generate Clearance Letter"]
-    [:button.btn.btn-primary
+    [:button
      {:type "button"
-      :onclick "document.getElementById('generate-statement-modal').classList.add('active')"}
+      "data-on:click" "$showStatementModal = true"}
      "+ Generate Statement"]
-    [:form {:method "post" :action (str "/contracts/" contract-id "/generate-contract-agreement")
-            :style "display: inline;"}
-     [:button.btn.btn-primary {:type "submit"} "+ Generate Contract Agreement"]]]
+    [:button
+     {:type "button"
+      "data-on:click" (str "@post('/contracts/" contract-id "/generate-contract-agreement')")}
+     "+ Generate Contract Agreement"]]
 
    ;; Clearance Letters
    (when (seq (:clearance-letters documents))
      [:div {:style "margin-bottom: 2rem;"}
       [:h4 "Clearance Letters"]
-      [:table.table
+      [:table
        [:thead
         [:tr
          [:th "Settlement Date"]
@@ -1941,18 +1184,16 @@ updateOrigDisbursement();
            [:td (format-money (:clearance-letter/settlement-amount cl))]
            [:td (:clearance-letter/penalty-days cl)]
            [:td
-            [:a.btn.btn-sm
-             {:href (str "/contracts/" contract-id "/documents/clearance-letter/"
-                        (:clearance-letter/id cl) "/download")
-              :style "background-color: #10b981; color: white;"
-              :download ""}
-             "⬇ Download PDF"]]])]]])
+            [:a {:role "button" :href (str "/contracts/" contract-id "/documents/clearance-letter/"
+                                           (:clearance-letter/id cl) "/download")
+                 :download ""}
+             "Download PDF"]]])]]])
 
    ;; Statements
    (when (seq (:statements documents))
      [:div {:style "margin-bottom: 2rem;"}
       [:h4 "Statements"]
-      [:table.table
+      [:table
        [:thead
         [:tr
          [:th "Period Start"]
@@ -1964,18 +1205,16 @@ updateOrigDisbursement();
            [:td (format-date (:statement/period-start stmt))]
            [:td (format-date (:statement/period-end stmt))]
            [:td
-            [:a.btn.btn-sm
-             {:href (str "/contracts/" contract-id "/documents/statement/"
-                        (:statement/id stmt) "/download")
-              :style "background-color: #10b981; color: white;"
-              :download ""}
-             "⬇ Download PDF"]]])]]])
+            [:a {:role "button" :href (str "/contracts/" contract-id "/documents/statement/"
+                                           (:statement/id stmt) "/download")
+                 :download ""}
+             "Download PDF"]]])]]])
 
    ;; Contract Agreements
    (when (seq (:contract-agreements documents))
      [:div {:style "margin-bottom: 2rem;"}
       [:h4 "Contract Agreements"]
-      [:table.table
+      [:table
        [:thead
         [:tr
          [:th "Generated Date"]
@@ -1986,20 +1225,17 @@ updateOrigDisbursement();
             [:tr
              [:td (format-date generated-date)]
              [:td
-              [:a.btn.btn-sm
-               {:href (str "/contracts/" contract-id "/documents/contract-agreement/"
-                          (:contract-agreement/id ca) "/download")
-                :style "background-color: #10b981; color: white;"
-                :download ""}
-               "⬇ Download PDF"]]]))]]])
+              [:a {:role "button" :href (str "/contracts/" contract-id "/documents/contract-agreement/"
+                                             (:contract-agreement/id ca) "/download")
+                   :download ""}
+               "Download PDF"]]]))]]])
 
    ;; No documents message
    (when (and (empty? (:clearance-letters documents))
               (empty? (:statements documents))
               (empty? (:contract-agreements documents)))
-     [:div {:style "text-align: center; padding: 2rem; color: #6b7280;"}
+     [:div {:style "text-align: center; padding: 2rem; color: var(--pico-muted-color);"}
       "No documents have been generated for this contract yet."])])
-
 
 (defn contract-detail-page
   "Render contract detail page.
@@ -2014,54 +1250,64 @@ updateOrigDisbursement();
    (let [contract-id (get-in state [:contract :id])]
      (page-layout
       (str "Contract: " (get-in state [:contract :external-id]))
-      [:div
+      [:div {"data-signals:show-payment-modal" "false"
+             "data-signals:show-retract-payment-modal" "false"
+             "data-signals:show-retract-contract-modal" "false"
+             "data-signals:show-settlement-modal" "false"
+             "data-signals:show-origination-modal" "false"
+             "data-signals:show-retract-origination-modal" "false"
+             "data-signals:show-clearance-letter-modal" "false"
+             "data-signals:show-statement-modal" "false"
+             "data-signals:retract-payment-id" "''"
+             "data-signals:retract-ref" "''"
+             "data-signals:retract-amount" "''"
+             "data-signals:override-toggle" "false"}
        (flash-message flash)
        [:div {:style "margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;"}
-        [:a.btn.btn-secondary {:href "/contracts"} "\u2190 Back to Contracts"]
-        [:div {:style "display: flex; gap: 0.5rem;"}
-         [:button.btn.btn-success
+        [:a.secondary {:href "/contracts" :role "button"} "\u2190 Back to Contracts"]
+        [:div.action-bar
+         [:button
           {:type "button"
-           :onclick "document.getElementById('origination-modal').classList.add('active')"}
+           "data-on:click" "$showOriginationModal = true"}
           "Originate"]
-         [:button.btn
+         [:button.btn-caution
           {:type "button"
-           :style "background-color: #f59e0b; color: white;"
-           :onclick "document.getElementById('retract-origination-modal').classList.add('active')"}
+           "data-on:click" "$showRetractOriginationModal = true"}
           "Retract Origination"]
-         [:button.btn.btn-settlement
+         [:button
           {:type "button"
-           :onclick "document.getElementById('settlement-modal').classList.add('active')"}
+           "data-on:click" "$showSettlementModal = true"}
           "Calculate Settlement"]
-         [:button.btn.btn-primary
+         [:button
           {:type "button"
-           :onclick "document.getElementById('payment-modal').classList.add('active')"}
+           "data-on:click" "$showPaymentModal = true"}
           "+ Record Payment"]
-         [:button.btn
+         [:button.btn-danger
           {:type "button"
-           :style "background-color: #dc2626; color: white;"
-           :onclick "document.getElementById('retract-contract-modal').classList.add('active')"}
+           "data-on:click" "$showRetractContractModal = true"}
           "Delete Contract"]]]
        ;; Tabs navigation
-       [:div.tabs
-        [:a.tab.active {:href "#" :data-tab "overview" :onclick "switchTab(event, 'overview')"} "Overview"]
-        [:a.tab {:href "#" :data-tab "schedule" :onclick "switchTab(event, 'schedule')"} "Schedule"]
-        [:a.tab {:href "#" :data-tab "history"
-                 :onclick "switchTab(event, 'history')"
-                 :hx-get (str "/contracts/" contract-id "/history-tab")
-                 :hx-target "#tab-history"
-                 :hx-trigger "click once"
-                 :hx-swap "innerHTML"} "History"]
-        [:a.tab {:href "#" :data-tab "documents" :onclick "switchTab(event, 'documents')"} "Documents"]]
+       [:div.tabs {"data-signals:active-tab" "'overview'"
+                   "data-signals:history-loaded" "false"}
+        [:button {:data-class "{'active': $activeTab === 'overview'}"
+                  "data-on:click" "$activeTab = 'overview'"} "Overview"]
+        [:button {:data-class "{'active': $activeTab === 'schedule'}"
+                  "data-on:click" "$activeTab = 'schedule'"} "Schedule"]
+        [:button {:data-class "{'active': $activeTab === 'history'}"
+                  "data-on:click" (str "$activeTab = 'history'; if(!$historyLoaded) { $historyLoaded = true; @get('" "/contracts/" contract-id "/history-tab') }")} "History"]
+        [:button {:data-class "{'active': $activeTab === 'documents'}"
+                  "data-on:click" "$activeTab = 'documents'"} "Documents"]]
        ;; Tab content panels
-       [:div#tab-overview.tab-content.active
+       [:div#tab-overview.tab-content {"data-class" "{'active': $activeTab === 'overview'}"}
         (contract-summary state)
-        (fees-table (:fees state))]
-       [:div#tab-schedule.tab-content
+        (fees-table (:fees state))
+        (parties-section contract-id (:contract state))]
+       [:div#tab-schedule.tab-content {"data-class" "{'active': $activeTab === 'schedule'}"}
         (installments-table (:installments state))]
-       [:div#tab-history.tab-content
-        [:div {:style "text-align: center; padding: 2rem; color: #6b7280;"}
-         "Click the History tab to load transaction history..."]]
-       [:div#tab-documents.tab-content
+       [:div#tab-history.tab-content {"data-class" "{'active': $activeTab === 'history'}"}
+        [:div#history-tab-content
+         [:p [:small "Click the History tab to load transaction history..."]]]]
+       [:div#tab-documents.tab-content {"data-class" "{'active': $activeTab === 'documents'}"}
         (document-list-section contract-id (:documents state))]
        ;; Modals (outside tabs)
        (payment-form contract-id)
@@ -2071,31 +1317,7 @@ updateOrigDisbursement();
        (origination-form contract-id state)
        (retract-origination-modal contract-id)
        (generate-clearance-letter-modal contract-id)
-       (generate-statement-modal contract-id)
-       ;; JavaScript for tabs and modal handling
-       [:script "
-         function switchTab(event, tabName) {
-           event.preventDefault();
-           // Deactivate all tabs and panels
-           document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-           document.querySelectorAll('.tab-content').forEach(p => p.classList.remove('active'));
-           // Activate clicked tab and its panel
-           event.currentTarget.classList.add('active');
-           document.getElementById('tab-' + tabName).classList.add('active');
-         }
-
-         function showRetractPaymentModal(paymentId, reference, amount) {
-           document.getElementById('retract-payment-id').value = paymentId;
-           document.getElementById('retract-payment-details').innerHTML =
-             '<p><strong>Reference:</strong> ' + reference +
-             '<br><strong>Amount:</strong> SAR ' + amount.toLocaleString('en-US', {minimumFractionDigits: 2}) + '</p>';
-           document.getElementById('retract-payment-modal').classList.add('active');
-         }
-
-         function closeRetractPaymentModal() {
-           document.getElementById('retract-payment-modal').classList.remove('active');
-         }
-       "]]))))
+       (generate-statement-modal contract-id)]))))
 
 ;; ============================================================
 ;; Boarding Form Components
@@ -2110,13 +1332,13 @@ updateOrigDisbursement();
    Returns: Hiccup div or nil if no errors"
   [errors]
   (when (seq errors)
-    [:div {:style "padding: 1rem; margin-bottom: 1.5rem; border-radius: 0.5rem; background-color: #fef2f2; border: 1px solid #fca5a5;"}
-     [:h3 {:style "color: #991b1b; margin-bottom: 0.5rem; font-size: 1rem;"} "Validation Errors"]
-     [:ul {:style "color: #991b1b; margin-left: 1.5rem; font-size: 0.875rem;"}
+    [:div.flash-danger
+     [:h3 {:style "font-size: 1rem;"} "Validation Errors"]
+     [:ul
       (for [err errors]
         [:li {:key (:message err)} (:message err)])]]))
 
-(defn- fee-row-template
+(defn fee-row-template
   "Render a single fee input row.
 
    Args:
@@ -2126,25 +1348,22 @@ updateOrigDisbursement();
   [idx]
   [:div.fee-row {:style "display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0.5rem; margin-bottom: 0.5rem; align-items: end;"
                  :data-fee-row "true"}
-   [:div.form-group {:style "margin-bottom: 0;"}
+   [:div {:style "margin-bottom: 0;"}
     (when (= idx 0) [:label "Fee Type"])
-    [:select {:name "fee-type[]"
-              :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;"}
+    [:select {:name "fee-type[]"}
      [:option {:value "management"} "Management"]
      [:option {:value "insurance"} "Insurance"]
      [:option {:value "processing"} "Processing"]
      [:option {:value "documentation"} "Documentation"]]]
-   [:div.form-group {:style "margin-bottom: 0;"}
+   [:div {:style "margin-bottom: 0;"}
     (when (= idx 0) [:label "Amount (SAR)"])
-    [:input {:type "number" :name "fee-amount[]" :step "0.01" :min "0.01" :required true
-             :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;"}]]
-   [:div.form-group {:style "margin-bottom: 0;"}
-    (when (= idx 0) [:label "Due Date"])
-    [:input {:type "date" :name "fee-due-date[]" :required true
-             :style "width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;"}]]
-   [:button.btn.btn-secondary {:type "button"
-                               :onclick "this.closest('[data-fee-row]').remove()"
-                               :style "padding: 0.5rem; font-size: 0.875rem; height: fit-content;"}
+    [:input {:type "number" :name "fee-amount[]" :step "0.01" :min "0.01" :required true}]]
+   [:div {:style "margin-bottom: 0;"}
+    (when (= idx 0) [:label "Days After Disb."])
+    [:input {:type "number" :name "fee-days-after-disbursement[]" :min "0" :value "0" :required true
+             :placeholder "0 = at disbursement"}]]
+   [:button.secondary {:type "button"
+                       :onclick "this.closest('[data-fee-row]').remove()"}
     "X"]])
 
 (defn boarding-form-page
@@ -2168,21 +1387,15 @@ updateOrigDisbursement();
      [:div
       ;; Back link
       [:div {:style "margin-bottom: 1rem;"}
-       [:a.btn.btn-secondary {:href "/contracts"} "\u2190 Back to Contracts"]]
+       [:a.secondary {:role "button" :href "/contracts"} "\u2190 Back to Contracts"]]
 
       ;; Tab switcher
-      [:div {:style "display: flex; gap: 0; margin-bottom: 1.5rem; border-bottom: 2px solid #e5e7eb;"}
-       [:a {:href "/contracts/new?type=new"
-            :style (str "padding: 0.75rem 1.5rem; font-weight: 600; text-decoration: none; border-bottom: 2px solid "
-                        (if-not existing? "#3b82f6" "transparent")
-                        "; margin-bottom: -2px; color: "
-                        (if-not existing? "#3b82f6" "#6b7280") ";")}
+      [:div {:role "group"}
+       [:a {:role "button" :href "/contracts/new?type=new"
+            :class (when existing? "secondary")}
         "New Loan"]
-       [:a {:href "/contracts/new?type=existing"
-            :style (str "padding: 0.75rem 1.5rem; font-weight: 600; text-decoration: none; border-bottom: 2px solid "
-                        (if existing? "#3b82f6" "transparent")
-                        "; margin-bottom: -2px; color: "
-                        (if existing? "#3b82f6" "#6b7280") ";")}
+       [:a {:role "button" :href "/contracts/new?type=existing"
+            :class (when-not existing? "secondary")}
         "Existing Loan"]]
 
       ;; Validation errors
@@ -2194,35 +1407,31 @@ updateOrigDisbursement();
               :enctype "multipart/form-data"}
 
        ;; ── Contract Terms ──
-       [:div.card
+       [:article
         [:h2 "Contract Terms"]
-        [:div {:style "display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"}
+        [:div.grid
          [:div.form-group
           [:label {:for "external-id"} "External ID *"]
           [:input {:type "text" :id "external-id" :name "external-id" :required true
                    :value (get values "external-id")
                    :placeholder "e.g., LOAN-2024-001"}]]
-         [:div.form-group
-          [:label {:for "borrower-party-id"} "Borrower (Company) *"]
+         [:div.form-group {"data-signals:borrower-party-id" (str "'" (or (get values "borrower-party-id") "") "'")
+                           "data-signals:borrower-search" (str "'" (or (get values "borrower-name") "") "'")
+                           "data-signals:show-borrower-results" "false"}
+          [:label {:for "borrower-search"} "Borrower (Company) *"]
           [:input {:type "hidden" :id "borrower-party-id" :name "borrower-party-id"
-                   :value (get values "borrower-party-id")}]
+                   "data-bind:borrower-party-id" true}]
           [:input {:type "text" :id "borrower-search" :autocomplete "off"
                    :placeholder "Search by company name or CR number..."
-                   :value (get values "borrower-name")
-                   :hx-get "/api/parties/search?type=company"
-                   :hx-trigger "keyup changed delay:300ms"
-                   :hx-target "#borrower-results"
-                   :hx-swap "innerHTML"
+                   "data-bind:borrower-search" true
+                   "data-on:keyup__debounce.300ms" "$showBorrowerResults = true; @get('/api/parties/search?type=company&target=borrower-results&context=borrower')"
                    :name "borrower-search"}]
-          [:div {:id "borrower-results"
-                 :style "border: 1px solid #e5e7eb; border-radius: 0.375rem; max-height: 200px; overflow-y: auto; display: none;"}]
-          [:small {:style "color: #6b7280; font-size: 0.75rem;"}
+          [:div#borrower-results
+           {:style "border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); max-height: 200px; overflow-y: auto;"
+            "data-show" "$showBorrowerResults"}]
+          [:small
            "Search and select a company party. "
            [:a {:href "/parties/new" :target "_blank"} "Create new party"]]]
-         [:div.form-group
-          [:label {:for "start-date"} "Start Date *"]
-          [:input {:type "date" :id "start-date" :name "start-date" :required true
-                   :value (get values "start-date")}]]
          [:div.form-group
           [:label {:for "principal"} "Principal (SAR) *"]
           [:input {:type "number" :id "principal" :name "principal" :step "0.01" :min "0.01" :required true
@@ -2234,7 +1443,7 @@ updateOrigDisbursement();
                    :step "1" :min "1"
                    :value (get values "days-to-first-installment")
                    :placeholder "e.g., 30"}]
-          [:small {:style "color: #6b7280; font-size: 0.75rem;"}
+          [:small
            "Days from disbursement to first installment. Schedule dates shift at disbursement."]]
          [:div.form-group
           [:label {:for "security-deposit"} "Security Deposit (SAR)"]
@@ -2248,11 +1457,11 @@ updateOrigDisbursement();
                    :placeholder "Leave blank for standalone contract"}]]]]
 
        ;; ── Commodity Details (optional, collapsible) ──
-       [:div.card
+       [:article
         [:details
-         [:summary {:style "cursor: pointer; font-size: 1.25rem; font-weight: 600; color: #111827;"}
+         [:summary
           "Commodity Details (Optional)"]
-         [:div {:style "margin-top: 1rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"}
+         [:div.grid {:style "margin-top: 1rem;"}
           [:div.form-group
            [:label {:for "commodity-description"} "Description"]
            [:input {:type "text" :id "commodity-description" :name "commodity-description"
@@ -2273,11 +1482,11 @@ updateOrigDisbursement();
                     :value (get values "commodity-unit-price")}]]]]]
 
        ;; ── Banking Details (optional, collapsible) ──
-       [:div.card
+       [:article
         [:details
-         [:summary {:style "cursor: pointer; font-size: 1.25rem; font-weight: 600; color: #111827;"}
+         [:summary
           "Banking Details (Optional)"]
-         [:div {:style "margin-top: 1rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"}
+         [:div.grid {:style "margin-top: 1rem;"}
           [:div.form-group
            [:label {:for "disbursement-iban"} "Disbursement IBAN"]
            [:input {:type "text" :id "disbursement-iban" :name "disbursement-iban"
@@ -2295,52 +1504,50 @@ updateOrigDisbursement();
                     :placeholder "e.g., SA0380000000608010167520"}]]]]]
 
        ;; ── Fees ──
-       [:div.card
+       [:article
         [:h2 "Fees"]
         [:div#fee-rows
          (fee-row-template 0)]
-        [:button.btn.btn-secondary
+        [:button.secondary
          {:type "button"
           :onclick "addFeeRow()"
           :style "margin-top: 0.5rem; font-size: 0.875rem;"}
          "+ Add Fee"]]
 
        ;; ── Schedule CSV Upload ──
-       [:div.card
+       [:article
         [:h2 "Installment Schedule *"]
         [:p.text-muted {:style "margin-bottom: 1rem; font-size: 0.875rem;"}
          "Upload a CSV file with the installment schedule. "
          "Format: Seq, Due Date, Principal Due, Profit Due, Remaining Principal (optional)"]
         [:div.form-group
-         [:input {:type "file" :id "schedule-csv" :name "schedule-csv" :accept ".csv" :required true
-                  :style "padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 0.375rem; width: 100%;"}]]
+         [:input {:type "file" :id "schedule-csv" :name "schedule-csv" :accept ".csv" :required true}]]
         [:details {:style "margin-top: 0.5rem;"}
-         [:summary {:style "cursor: pointer; font-size: 0.8125rem; color: #6b7280;"} "Example CSV format"]
-         [:pre {:style "background-color: #f3f4f6; padding: 0.75rem; border-radius: 0.375rem; font-size: 0.75rem; overflow-x: auto; margin-top: 0.5rem;"}
+         [:summary "Example CSV format"]
+         [:pre
           "Seq,Due Date,Principal Due,Profit Due,Remaining Principal\n1,2024-01-31,83333.33,12500.00,1000000.00\n2,2024-02-28,83333.33,12500.00,916666.67\n3,2024-03-31,83333.34,12500.00,833333.34"]]]
 
        ;; ── Existing Loan: Payment History CSV ──
        (when existing?
-         [:div.card
+         [:article
           [:h2 "Payment History"]
           [:p.text-muted {:style "margin-bottom: 1rem; font-size: 0.875rem;"}
            "Upload a CSV with historical payments to replay. "
            "Format: Date, External ID, Payment Summary, Amount, Paid By, Source, Reference"]
           [:div.form-group
-           [:input {:type "file" :id "payment-csv" :name "payment-csv" :accept ".csv"
-                    :style "padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 0.375rem; width: 100%;"}]]
+           [:input {:type "file" :id "payment-csv" :name "payment-csv" :accept ".csv"}]]
           [:details {:style "margin-top: 0.5rem;"}
-           [:summary {:style "cursor: pointer; font-size: 0.8125rem; color: #6b7280;"} "Example CSV format"]
-           [:pre {:style "background-color: #f3f4f6; padding: 0.75rem; border-radius: 0.375rem; font-size: 0.75rem; overflow-x: auto; margin-top: 0.5rem;"}
+           [:summary "Example CSV format"]
+           [:pre
             "Date,External ID,Payment Summary,Amount,Paid By,Source,Reference\n2024-01-15,LOAN-001,Transfer,50000,Customer,,FT-ANB-12345\n2024-02-15,LOAN-001,Transfer,60000,Customer,,FT-ANB-12346"]]])
 
        ;; ── Existing Loan: Historical Disbursement ──
        (when existing?
-         [:div.card
+         [:article
           [:h2 "Historical Disbursement"]
           [:p.text-muted {:style "margin-bottom: 1rem; font-size: 0.875rem;"}
            "If the loan was already disbursed, enter the disbursement details."]
-          [:div {:style "display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"}
+          [:div.grid
            [:div.form-group
             [:label {:for "disb-amount"} "Disbursement Amount (SAR)"]
             [:input {:type "number" :id "disb-amount" :name "disb-amount" :step "0.01" :min "0.01"
@@ -2366,9 +1573,9 @@ updateOrigDisbursement();
 
        ;; ── Submit ──
        [:div {:style "margin-top: 1.5rem; display: flex; gap: 0.75rem;"}
-        [:button.btn.btn-success {:type "submit" :style "font-size: 1rem; padding: 0.75rem 2rem;"}
+        [:button {:type "submit"}
          (if existing? "Board Existing Contract" "Board New Contract")]
-        [:a.btn.btn-secondary {:href "/contracts" :style "font-size: 1rem; padding: 0.75rem 2rem;"}
+        [:a.secondary {:role "button" :href "/contracts"}
          "Cancel"]]]
 
       ;; JavaScript for party search and dynamic fee rows
@@ -2390,7 +1597,7 @@ updateOrigDisbursement();
           var row = document.createElement('div');
           row.setAttribute('data-fee-row', 'true');
           row.style.cssText = 'display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0.5rem; margin-bottom: 0.5rem; align-items: end;';
-          row.innerHTML = '<div class=\"form-group\" style=\"margin-bottom: 0;\"><select name=\"fee-type[]\" style=\"width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;\"><option value=\"management\">Management</option><option value=\"insurance\">Insurance</option><option value=\"processing\">Processing</option><option value=\"documentation\">Documentation</option></select></div><div class=\"form-group\" style=\"margin-bottom: 0;\"><input type=\"number\" name=\"fee-amount[]\" step=\"0.01\" min=\"0.01\" required style=\"width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;\"></div><div class=\"form-group\" style=\"margin-bottom: 0;\"><input type=\"date\" name=\"fee-due-date[]\" required style=\"width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.375rem; font-size: 1rem;\"></div><button type=\"button\" class=\"btn btn-secondary\" onclick=\"this.closest(\\x27[data-fee-row]\\x27).remove()\" style=\"padding: 0.5rem; font-size: 0.875rem; height: fit-content;\">X</button>';
+          row.innerHTML = '<div style=\"margin-bottom: 0;\"><select name=\"fee-type[]\"><option value=\"management\">Management</option><option value=\"insurance\">Insurance</option><option value=\"processing\">Processing</option><option value=\"documentation\">Documentation</option></select></div><div style=\"margin-bottom: 0;\"><input type=\"number\" name=\"fee-amount[]\" step=\"0.01\" min=\"0.01\" required></div><div style=\"margin-bottom: 0;\"><input type=\"number\" name=\"fee-days-after-disbursement[]\" min=\"0\" value=\"0\" required placeholder=\"0 = at disbursement\"></div><button type=\"button\" class=\"secondary\" onclick=\"this.closest(\\x27[data-fee-row]\\x27).remove()\">X</button>';
           container.appendChild(row);
         }
       "]])))
@@ -2409,15 +1616,15 @@ updateOrigDisbursement();
   [parties]
   (page-layout
    "Parties"
-   [:div.card
-    [:div {:style "display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;"}
-     [:h2 {:style "margin-bottom: 0;"} "All Parties"]
-     [:a.btn.btn-success {:href "/parties/new"} "+ Create Party"]]
+   [:article
+    [:div.page-header
+     [:h2.mb-0 "All Parties"]
+     [:a {:role "button" :href "/parties/new"} "+ Create Party"]]
     (if (empty? parties)
       [:div.empty-state
        [:p "No parties found."]
        [:p.text-muted "Create a party to get started."]]
-      [:table
+      [:table.striped
        [:thead
         [:tr
          [:th "Legal Name"]
@@ -2436,7 +1643,7 @@ updateOrigDisbursement();
                   (str (:party/type p)))]
            [:td (or (:party/cr-number p) (:party/national-id p))]
            [:td (or (:party/email p) (:party/phone p) "-")]
-           [:td [:a.btn.btn-primary {:href (str "/parties/" (:party/id p))}
+           [:td [:a {:role "button" :href (str "/parties/" (:party/id p))}
                  "View"]]])]])]))
 
 (defn party-form-page
@@ -2453,22 +1660,23 @@ updateOrigDisbursement();
      (if editing? "Edit Party" "Create Party")
      [:div
       [:div {:style "margin-bottom: 1rem;"}
-       [:a.btn.btn-secondary {:href "/parties"} "\u2190 Back to Parties"]]
+       [:a.secondary {:role "button" :href "/parties"} "\u2190 Back to Parties"]]
+
+      [:div#flash-area]
 
       (when (seq errors)
-        [:div.card {:style "background-color: #fef2f2; border-color: #fca5a5;"}
-         [:h3 {:style "color: #991b1b;"} "Validation Errors"]
+        [:div.flash-danger
+         [:h3 {:style "font-size: 1rem;"} "Validation Errors"]
          [:ul
           (for [err errors]
-            [:li {:style "color: #991b1b;"} (:message err)])]])
+            [:li (:message err)])]])
 
-      [:form {:method "post"
-              :action (if editing?
-                        (str "/parties/" (:party/id party) "/update")
-                        "/parties")}
-       [:div.card
+      [:form (if editing?
+               {"data-on:submit" (str "@post('/parties/" (:party/id party) "/update', {contentType: 'form'})")}
+               {:method "post" :action "/parties"})
+       [:article
         [:h2 (if editing? "Edit Party" "New Party")]
-        [:div {:style "display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;"}
+        [:div.grid
          [:div.form-group
           [:label {:for "type"} "Type *"]
           (if editing?
@@ -2496,14 +1704,14 @@ updateOrigDisbursement();
                    :value (or (get values "cr-number")
                               (:party/cr-number party))
                    :placeholder "Commercial Registration number"}]
-          [:small {:style "color: #6b7280; font-size: 0.75rem;"} "Required for companies"]]
+          [:small "Required for companies"]]
          [:div.form-group {:id "national-id-group"}
           [:label {:for "national-id"} "National ID"]
           [:input {:type "text" :id "national-id" :name "national-id"
                    :value (or (get values "national-id")
                               (:party/national-id party))
                    :placeholder "National ID / Iqama number"}]
-          [:small {:style "color: #6b7280; font-size: 0.75rem;"} "Required for persons"]]
+          [:small "Required for persons"]]
          [:div.form-group
           [:label {:for "email"} "Email"]
           [:input {:type "email" :id "email" :name "email"
@@ -2524,9 +1732,9 @@ updateOrigDisbursement();
                    :placeholder "Full address"}]]]]
 
        [:div {:style "margin-top: 1.5rem; display: flex; gap: 0.75rem;"}
-        [:button.btn.btn-success {:type "submit" :style "font-size: 1rem; padding: 0.75rem 2rem;"}
+        [:button {:type "submit"}
          (if editing? "Update Party" "Create Party")]
-        [:a.btn.btn-secondary {:href "/parties" :style "font-size: 1rem; padding: 0.75rem 2rem;"}
+        [:a.secondary {:role "button" :href "/parties"}
          "Cancel"]]]
 
       [:script "
@@ -2548,6 +1756,67 @@ updateOrigDisbursement();
         togglePartyFields();
       "]])))
 
+(defn ownership-section
+  "Render ownership structure section for a company party.
+
+   Args:
+   - party-id: UUID of the company
+   - ownerships: Sequence of ownership records (with :ownership/owner pull)
+
+   Returns: Hiccup div"
+  [party-id ownerships]
+  [:article#ownership-section
+   [:h2 "Ownership Structure"]
+   (if (empty? ownerships)
+     [:p.text-muted "No ownership records."]
+     [:table
+      [:thead
+       [:tr
+        [:th "Owner"]
+        [:th "Type"]
+        [:th.text-right "Percentage"]
+        [:th {:style "width: 5rem;"} ""]]]
+      [:tbody
+       (for [o ownerships]
+         [:tr {:key (:ownership/id o)}
+          [:td [:a {:href (str "/parties/" (get-in o [:ownership/owner :party/id]))}
+                (get-in o [:ownership/owner :party/legal-name])]]
+          [:td (case (get-in o [:ownership/owner :party/type])
+                 :party.type/company "Company"
+                 :party.type/person "Person"
+                 "-")]
+          [:td.text-right (str (:ownership/percentage o) "%")]
+          [:td
+           [:button.btn-danger
+            {:type "button"
+             "data-on:click" (str "@post('/parties/" party-id
+                                  "/ownership/" (:ownership/id o) "/remove')")}
+            "Remove"]]])]])
+   [:h3 {:style "margin-top: 1.5rem;"} "Add Owner"]
+   [:div {"data-signals:owner-party-id" "''"
+          "data-signals:owner-search" "''"
+          "data-signals:show-owner-results" "false"}
+    [:form {"data-on:submit" (str "@post('/parties/" party-id "/ownership', {contentType: 'form'})")}
+     [:div {:style "display: flex; gap: 0.75rem; align-items: flex-end;"}
+      [:div.form-group {:style "flex: 2; position: relative;"}
+       [:label {:for "owner-search"} "Owner Party"]
+       [:input {:type "hidden" :name "owner-party-id" "data-bind:owner-party-id" true}]
+       [:input {:type "text" :autocomplete "off"
+                :placeholder "Search by name, CR, or National ID..."
+                "data-bind:owner-search" true
+                "data-on:keyup__debounce.300ms" "$showOwnerResults = true; @get('/api/parties/search?target=owner-search-results&context=owner')"}]
+       [:div#owner-search-results
+        {:style "position: absolute; z-index: 10; background: var(--pico-background-color); border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); width: 100%; max-height: 200px; overflow-y: auto;"
+         "data-show" "$showOwnerResults"}]]
+      [:div.form-group {:style "flex: 1;"}
+       [:label {:for "percentage"} "Percentage"]
+       [:input {:type "number" :name "percentage"
+                :min "0.01" :max "100" :step "0.01"
+                :placeholder "e.g. 60"
+                :required true}]]
+      [:div
+       [:button {:type "submit"} "Add Owner"]]]]]])
+
 (defn party-detail-page
   "Render party detail page.
 
@@ -2565,34 +1834,36 @@ updateOrigDisbursement();
      (str "Party: " (:party/legal-name party))
      [:div
       [:div {:style "margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;"}
-       [:a.btn.btn-secondary {:href "/parties"} "\u2190 Back to Parties"]
-       [:a.btn.btn-primary {:href (str "/parties/" party-id "/edit")} "Edit"]]
+       [:a.secondary {:role "button" :href "/parties"} "\u2190 Back to Parties"]
+       [:a {:role "button" :href (str "/parties/" party-id "/edit")} "Edit"]]
+
+      [:div#flash-area]
 
       ;; Party info card
-      [:div.card
+      [:div
        [:h2 (:party/legal-name party)]
-       [:div.summary-grid
-        [:div.summary-item
-         [:div.label "Type"]
-         [:div.value (if company? "Company" "Person")]]
-        [:div.summary-item
-         [:div.label (if company? "CR Number" "National ID")]
-         [:div.value (or (if company? (:party/cr-number party) (:party/national-id party)) "-")]]
+       [:div.grid
+        [:article
+         [:small "Type"] [:br]
+         [:strong (if company? "Company" "Person")]]
+        [:article
+         [:small (if company? "CR Number" "National ID")] [:br]
+         [:strong (or (if company? (:party/cr-number party) (:party/national-id party)) "-")]]
         (when (:party/email party)
-          [:div.summary-item
-           [:div.label "Email"]
-           [:div.value (:party/email party)]])
+          [:article
+           [:small "Email"] [:br]
+           [:strong (:party/email party)]])
         (when (:party/phone party)
-          [:div.summary-item
-           [:div.label "Phone"]
-           [:div.value (:party/phone party)]])
-        (when (:party/address party)
-          [:div.summary-item {:style "grid-column: span 2;"}
-           [:div.label "Address"]
-           [:div.value (:party/address party)]])]]
+          [:article
+           [:small "Phone"] [:br]
+           [:strong (:party/phone party)]])]
+       (when (:party/address party)
+         [:article
+          [:small "Address"] [:br]
+          [:strong (:party/address party)]])]
 
       ;; Contracts section
-      [:div.card
+      [:article
        [:h2 "Contracts"]
        (if (empty? contracts)
          [:p.text-muted "No contract involvement."]
@@ -2610,86 +1881,11 @@ updateOrigDisbursement();
 
       ;; Ownership section (for companies: who owns this company)
       (when company?
-        [:div.card
-         [:h2 "Ownership Structure"]
-         (when (seq ownerships)
-           [:table
-            [:thead
-             [:tr
-              [:th "Owner"]
-              [:th "Type"]
-              [:th.text-right "Percentage"]
-              [:th "Actions"]]]
-            [:tbody
-             (for [o ownerships]
-               [:tr {:key (:ownership/id o)}
-                [:td [:a {:href (str "/parties/" (get-in o [:ownership/owner :party/id]))}
-                      (get-in o [:ownership/owner :party/legal-name])]]
-                [:td (case (get-in o [:ownership/owner :party/type])
-                       :party.type/company "Company"
-                       :party.type/person "Person"
-                       "-")]
-                [:td.text-right (str (:ownership/percentage o) "%")]
-                [:td [:form {:method "post" :style "display: inline;"
-                             :action (str "/parties/" party-id
-                                          "/ownership/" (:ownership/id o) "/remove")}
-                      [:button.btn {:type "submit"
-                                    :style "background-color: #dc2626; color: white; font-size: 0.75rem; padding: 0.25rem 0.5rem;"
-                                    :onclick "return confirm('Remove this ownership record?')"}
-                       "Remove"]]]])]])
-         (when (empty? ownerships)
-           [:p.text-muted "No ownership records."])
-         [:h3 {:style "margin-top: 1.5rem;"} "Add Owner"]
-         [:form {:method "post"
-                 :action (str "/parties/" party-id "/ownership")}
-          [:div {:style "display: flex; gap: 0.75rem; align-items: flex-end;"}
-           [:div.form-group {:style "flex: 2; position: relative;"}
-            [:label {:for "owner-search"} "Owner Party"]
-            [:input {:type "hidden" :id "owner-party-id" :name "owner-party-id"}]
-            [:input {:type "text" :id "owner-search" :name "owner-search"
-                     :placeholder "Search by name, CR, or National ID..."
-                     :autocomplete "off"}]
-            [:div {:id "owner-search-results"
-                   :style "position: absolute; z-index: 10; background: white; border: 1px solid #d1d5db; border-radius: 0.375rem; width: 100%; max-height: 200px; overflow-y: auto; display: none;"}]]
-           [:div.form-group {:style "flex: 1;"}
-            [:label {:for "percentage"} "Percentage"]
-            [:input {:type "number" :id "percentage" :name "percentage"
-                     :min "0.01" :max "100" :step "0.01"
-                     :placeholder "e.g. 60"
-                     :required true}]]
-           [:div
-            [:button.btn.btn-primary {:type "submit"} "Add Owner"]]]
-          [:script "
-(function() {
-  var searchInput = document.getElementById('owner-search');
-  var resultsDiv = document.getElementById('owner-search-results');
-  var hiddenInput = document.getElementById('owner-party-id');
-  searchInput.addEventListener('input', function() {
-    var q = this.value;
-    if (q.length < 1) { resultsDiv.style.display = 'none'; return; }
-    fetch('/api/parties/search?q=' + encodeURIComponent(q))
-      .then(function(r) { return r.text(); })
-      .then(function(html) {
-        resultsDiv.innerHTML = html;
-        resultsDiv.style.display = 'block';
-      });
-  });
-  document.addEventListener('click', function(e) {
-    if (!resultsDiv.contains(e.target) && e.target !== searchInput) {
-      resultsDiv.style.display = 'none';
-    }
-  });
-  window.selectParty = function(id, name) {
-    hiddenInput.value = id;
-    searchInput.value = name;
-    resultsDiv.style.display = 'none';
-  };
-})();
-"]]])
+        (ownership-section party-id ownerships))
 
       ;; Ownership section (what this party owns)
       (when (seq owns)
-        [:div.card
+        [:article
          [:h2 "Owns Shares In"]
          [:table
           [:thead
@@ -2714,7 +1910,7 @@ updateOrigDisbursement();
   []
   (page-layout
    "Not Found"
-   [:div.card
+   [:article
     [:h2 "404 - Not Found"]
     [:p "The page you're looking for doesn't exist."]
     [:p [:a {:href "/"} "Go home"]]]))
@@ -2729,9 +1925,8 @@ updateOrigDisbursement();
   [error]
   (page-layout
    "Error"
-   [:div.card
+   [:article
     [:h2 "500 - Internal Server Error"]
     [:p "An error occurred while processing your request."]
-    [:pre {:style "background-color: #f3f4f6; padding: 1rem; border-radius: 0.375rem; overflow-x: auto;"}
-     (str error)]
+    [:pre (str error)]
     [:p [:a {:href "/"} "Go home"]]]))

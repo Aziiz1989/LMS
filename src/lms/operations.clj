@@ -25,6 +25,8 @@
             [lms.db :as db]
             [lms.dates :as dates]))
 
+(declare compute-date-shift)
+
 ;; ============================================================
 ;; Payment Operations
 ;; ============================================================
@@ -332,6 +334,8 @@
    - All principal-allocation/* entities (fee deductions from funding)
    - All disbursement/* entities with type :funding or :excess-return
    - All deposit/* entities with source :funding
+   - contract/disbursed-at (reverts status to :pending)
+   - Installment date shifts (recomputed relative to today)
 
    TX metadata records WHO corrected it, WHY, and WHAT contract.
    Datomic history preserves retracted datoms for forensics.
@@ -353,17 +357,25 @@
   [conn contract-id reason user-id & {:keys [note]}]
   (let [db (d/db conn)
 
+        ;; Query contract for disbursed-at and days-to-first-installment
+        contract (d/pull db [:contract/disbursed-at
+                             :contract/days-to-first-installment]
+                         [:contract/id contract-id])
+        disbursed-at (:contract/disbursed-at contract)
+        days-to-first (:contract/days-to-first-installment contract)
+
         ;; Query origination-created entities
         principal-allocations (contract/get-principal-allocations db contract-id)
         disbursements (contract/get-disbursements db contract-id)
         deposits (contract/get-deposits db contract-id)
+        installments (contract/get-installments db contract-id)
 
         ;; Filter to origination-related entities only
         funding-disbursements (filter #(#{:funding :excess-return} (:disbursement/type %))
                                       disbursements)
         funding-deposits (filter #(= :funding (:deposit/source %)) deposits)
 
-        ;; Build retract statements
+        ;; Build retract statements for entities
         retract-stmts
         (concat
          (map (fn [pa] [:db/retractEntity [:principal-allocation/id (:principal-allocation/id pa)]])
@@ -371,7 +383,25 @@
          (map (fn [d] [:db/retractEntity [:disbursement/id (:disbursement/id d)]])
               funding-disbursements)
          (map (fn [d] [:db/retractEntity [:deposit/id (:deposit/id d)]])
-              funding-deposits))]
+              funding-deposits))
+
+        ;; Retract contract/disbursed-at (reverts status to :pending)
+        disbursed-at-retraction
+        (when disbursed-at
+          [[:db/retract [:contract/id contract-id] :contract/disbursed-at disbursed-at]])
+
+        ;; Recompute installment dates relative to today
+        ;; Re-origination will recompute from the new disbursement date
+        today (java.util.Date.)
+        shift-days (if (and disbursed-at days-to-first (seq installments))
+                     (compute-date-shift today days-to-first installments)
+                     0)
+        date-reversals
+        (when (not= 0 shift-days)
+          (for [inst installments]
+            {:db/id [:installment/id (:installment/id inst)]
+             :installment/due-date
+             (dates/add-days (:installment/due-date inst) shift-days)}))]
 
     (when (empty? retract-stmts)
       (throw (ex-info "No origination entities found to retract"
@@ -380,6 +410,8 @@
     (d/transact conn
                 {:tx-data (concat
                            retract-stmts
+                           disbursed-at-retraction
+                           date-reversals
                            [(cond-> {:db/id "datomic.tx"
                                      :tx/reason reason
                                      :tx/corrects [:contract/id contract-id]
@@ -698,7 +730,7 @@
    - contract-data: Map with contract attributes:
      Required:
        :contract/id, :contract/external-id, :contract/borrower,
-       :contract/start-date, :contract/principal
+       :contract/principal
      Optional (enrichments):
        :contract/facility           - ref to facility (for credit line contracts)
        :contract/guarantors         - ref many to guarantor parties
@@ -744,7 +776,7 @@
   ;; Validate required contract fields
   ;; Note: status is derived, not stored. maturity-date is derived from installments.
   (doseq [k [:contract/id :contract/external-id :contract/borrower
-             :contract/start-date :contract/principal]]
+             :contract/principal]]
     (when-not (get contract-data k)
       (throw (ex-info (str "Missing required contract field: " k)
                       {:field k :error :missing-required-field}))))

@@ -8,7 +8,9 @@
             [datomic.client.api :as d]
             [lms.db :as db]
             [lms.handlers :as handlers]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [starfederation.datastar.clojure.api :as d*]
+            [starfederation.datastar.clojure.adapter.ring :as ring-sse]))
 
 (defn page-html [& body]
   (str (h/html
@@ -18,7 +20,7 @@
           [:meta {:charset "utf-8"}]
           [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
           [:title "LMS - Test"]
-          [:script {:src "https://unpkg.com/htmx.org@2.0.4"}]
+          [:script {:src "https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-RC.7/bundles/datastar.js" :type "module"}]
           [:style "body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }"]]
          [:body body]])))
 
@@ -32,26 +34,24 @@
            [:li "✓ Reitit routing working"]
            [:li "✓ Hiccup rendering HTML"]]
           [:hr]
-          [:h2 "HTMX Test"]
-          [:button {:hx-get "/api/time"
-                    :hx-target "#time-display"
-                    :hx-swap "innerHTML"}
+          [:h2 "Datastar Test"]
+          [:button {"data-on:click" "@get('/api/time')"}
            "Get Server Time"]
           [:p {:id "time-display"} "Click the button to fetch time from server"]
           [:hr]
           [:h2 "Datomic Local Test"]
-          [:button {:hx-get "/api/db-test"
-                    :hx-target "#db-display"
-                    :hx-swap "innerHTML"}
+          [:button {"data-on:click" "@get('/api/db-test')"}
            "Test Datomic Connection"]
           [:p {:id "db-display"} "Click to test Datomic Local connection"])})
 
-(defn time-handler [_request]
-  {:status 200
-   :headers {"Content-Type" "text/html"}
-   :body (str "<strong>Server time:</strong> " (java.util.Date.))})
+(defn time-handler [request]
+  (ring-sse/->sse-response request
+                           {ring-sse/on-open
+                            (fn [sse]
+                              (d*/patch-elements! sse (str "<p id=\"time-display\"><strong>Server time:</strong> " (java.util.Date.) "</p>"))
+                              (d*/close-sse! sse))}))
 
-(defn db-test-handler [_request]
+(defn db-test-handler [request]
   (try
     (let [client (d/client {:server-type :datomic-local
                             :storage-dir :mem
@@ -59,15 +59,21 @@
           _ (d/create-database client {:db-name "test"})
           conn (d/connect client {:db-name "test"})
           db (d/db conn)]
-      {:status 200
-       :headers {"Content-Type" "text/html"}
-       :body (str "<strong style=\"color:green\">✓ Datomic Local connected!</strong><br>"
-                  "Database: " (pr-str db))})
+      (ring-sse/->sse-response request
+                               {ring-sse/on-open
+                                (fn [sse]
+                                  (d*/patch-elements! sse
+                                                      (str "<p id=\"db-display\"><strong style=\"color:green\">✓ Datomic Local connected!</strong><br>"
+                                                           "Database: " (pr-str db) "</p>"))
+                                  (d*/close-sse! sse))}))
     (catch Exception e
       (log/error e "Datomic connection failed")
-      {:status 500
-       :headers {"Content-Type" "text/html"}
-       :body (str "<strong style=\"color:red\">✗ Datomic error:</strong> " (.getMessage e))})))
+      (ring-sse/->sse-response request
+                               {ring-sse/on-open
+                                (fn [sse]
+                                  (d*/patch-elements! sse
+                                                      (str "<p id=\"db-display\"><strong style=\"color:red\">✗ Datomic error:</strong> " (.getMessage e) "</p>"))
+                                  (d*/close-sse! sse))}))))
 
 ;; ============================================================
 ;; Connection — created once, injected via middleware
@@ -128,7 +134,8 @@
     ["/api"
      ["/time" {:get time-handler}]
      ["/db-test" {:get db-test-handler}]
-     ["/parties/search" {:get handlers/search-parties-handler}]]]
+     ["/parties/search" {:get handlers/search-parties-handler}]
+     ["/fee-row-template" {:get handlers/fee-row-template-handler}]]]
    {:conflicts nil}))
 
 (def app
@@ -150,15 +157,12 @@
 (comment
   ;; Start server from REPL
   (def server
-    (start-server)
-    )
+    (start-server))
 
-  ;; Stop server
+;; Stop server
   (.stop server)
-  
 
   (defn reload! []
     (require '[lms.core] :reload-all)
     :reloaded)
-  (reload!) 
-  )
+  (reload!))

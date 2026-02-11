@@ -1,6 +1,8 @@
 services:
   dev:
-    build: .
+    build:
+      context: .
+      target: dev
     volumes:
       # Mount source code for live reloading
       - .:/usr/src/app

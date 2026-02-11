@@ -64,37 +64,37 @@
   (if (zero? n-days)
     0M
     (with-precision 20 :rounding HALF_UP
-      (loop [remaining n-days
-             profit   0M
-             periods  (cond-> []
+                    (loop [remaining n-days
+                           profit   0M
+                           periods  (cond-> []
                         ;; Remaining portion of current period
-                        (and current (pos? period-days) (> period-days accrued-days))
-                        (conj {:profit-due  (:profit-due current)
-                               :period-days period-days
-                               :available   (- period-days accrued-days)})
+                                      (and current (pos? period-days) (> period-days accrued-days))
+                                      (conj {:profit-due  (:profit-due current)
+                                             :period-days period-days
+                                             :available   (- period-days accrued-days)})
                         ;; Future installments
-                        true
-                        (into (for [inst future-insts
-                                    :let [pd (period-days-for inst sorted-insts start-date)]
-                                    :when (pos? pd)]
-                                {:profit-due  (:profit-due inst)
-                                 :period-days pd
-                                 :available   pd})))
-             last-daily nil]
-        (if (zero? remaining)
-          profit
-          (if (empty? periods)
+                                      true
+                                      (into (for [inst future-insts
+                                                  :let [pd (period-days-for inst sorted-insts start-date)]
+                                                  :when (pos? pd)]
+                                              {:profit-due  (:profit-due inst)
+                                               :period-days pd
+                                               :available   pd})))
+                           last-daily nil]
+                      (if (zero? remaining)
+                        profit
+                        (if (empty? periods)
             ;; Beyond schedule: extrapolate from last period's daily rate
-            (if last-daily
-              (+ profit (* last-daily remaining))
-              profit)
-            (let [{:keys [profit-due period-days available]} (first periods)
-                  daily     (/ profit-due period-days)
-                  take-days (min remaining available)]
-              (recur (- remaining take-days)
-                     (+ profit (* daily take-days))
-                     (rest periods)
-                     daily))))))))
+                          (if last-daily
+                            (+ profit (* last-daily remaining))
+                            profit)
+                          (let [{:keys [profit-due period-days available]} (first periods)
+                                daily     (/ profit-due period-days)
+                                take-days (min remaining available)]
+                            (recur (- remaining take-days)
+                                   (+ profit (* daily take-days))
+                                   (rest periods)
+                                   daily))))))))
 
 ;; ============================================================
 ;; Settlement Calculation
@@ -118,7 +118,7 @@
   if credit exceeds obligations, :refund-due contains the positive refund amount."
   [state settlement-date penalty-days & {:keys [manual-override]}]
   (let [contract (:contract state)
-        start-date (:start-date contract)
+        start-date (or (:disbursed-at contract) (java.util.Date.))
         installments (:installments state)
         sorted-insts (sort-by :seq installments)
 
@@ -153,7 +153,7 @@
         current-accrued
         (if (and current (pos? period-days))
           (with-precision 20 :rounding HALF_UP
-            (* (/ (:profit-due current) period-days) accrued-days))
+                          (* (/ (:profit-due current) period-days) accrued-days))
           0M)
 
         accrued-profit (+ past-profit current-accrued)
@@ -191,15 +191,15 @@
                 lp-days (period-days-for last-past sorted-insts start-date)]
             (if (pos? lp-days)
               (with-precision 20 :rounding HALF_UP
-                (* (/ (:profit-due last-past) lp-days) penalty-days))
+                              (* (/ (:profit-due last-past) lp-days) penalty-days))
               0M))
 
           :else 0M)
 
         ;; ── Manual override ──
         effective-accrued-unpaid (if manual-override
-                                  manual-override
-                                  accrued-unpaid-profit)
+                                   manual-override
+                                   accrued-unpaid-profit)
 
         ;; ── Unearned profit (informational) ──
         total-profit-due (or (:total-profit-due state) 0M)
@@ -207,10 +207,10 @@
 
         ;; ── Settlement amount ──
         raw-settlement (- (+ outstanding-principal
-                              effective-accrued-unpaid
-                              outstanding-fees
-                              penalty-amount)
-                           credit-balance)
+                             effective-accrued-unpaid
+                             outstanding-fees
+                             penalty-amount)
+                          credit-balance)
         settlement-amount (max 0M raw-settlement)]
 
     {:outstanding-principal outstanding-principal

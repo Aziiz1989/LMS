@@ -11,8 +11,11 @@
   ;; Routing
   metosin/reitit {:mvn/version "0.10.0"}
 
-  ;; HTML templating (htmx served via hiccup)
+  ;; HTML templating (datastar served via hiccup)
   hiccup/hiccup {:mvn/version "2.0.0"}
+
+  ;; Hypermedia (Datastar SSE)
+  dev.data-star.clojure/ring {:mvn/version "1.0.0-RC7"}
 
   ;; Database
   com.datomic/local {:mvn/version "1.0.291"}
@@ -24,7 +27,8 @@
   com.taoensso/timbre {:mvn/version "6.8.0"}
 
   ;; CSV parsing (for migration)
-  org.clojure/data.csv {:mvn/version "1.1.0"}}
+  org.clojure/data.csv {:mvn/version "1.1.0"}
+  }
 
  :aliases
  {:dev
