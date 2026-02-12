@@ -995,7 +995,7 @@
    - contract-id: UUID
    - as-of: java.util.Date (for determining overdue status)"
   [db contract-id as-of]
-  (let [{:keys [contract fees installments payments deposits
+  (let [{:keys [contract fees installments payments deposits disbursements
                 inflows outflows]}
         (query-facts db contract-id)
 
@@ -1059,6 +1059,32 @@
       :deposit-held deposit-held
       :deposit-allocated (or deposit-allocated 0M)
       :credit-balance credit-balance
+      :inflows (mapv (fn [i] {:id (:inflow/id i)
+                              :amount (:inflow/amount i)
+                              :date (:inflow/effective-date i)
+                              :source (:inflow/source i)
+                              :source-contract (get-in i [:inflow/source-contract :contract/id])})
+                     inflows)
+      :outflows (mapv (fn [o] {:id (:outflow/id o)
+                               :amount (:outflow/amount o)
+                               :date (:outflow/effective-date o)
+                               :type (:outflow/type o)
+                               :target-contract (get-in o [:outflow/target-contract :contract/id])})
+                      outflows)
+      :disbursements (mapv (fn [d] {:id (:disbursement/id d)
+                                    :type (:disbursement/type d)
+                                    :amount (:disbursement/amount d)
+                                    :date (:disbursement/date d)
+                                    :reference (:disbursement/reference d)
+                                    :iban (:disbursement/iban d)
+                                    :bank (:disbursement/bank d)})
+                           disbursements)
+      :deposits-raw (mapv (fn [dep] {:id (:deposit/id dep)
+                                     :type (:deposit/type dep)
+                                     :amount (:deposit/amount dep)
+                                     :date (:deposit/date dep)
+                                     :source (:deposit/source dep)})
+                          deposits)
       :documents {:clearance-letters (get-clearance-letters db contract-id)
                   :statements (get-statements db contract-id)
                   :contract-agreements (get-contract-agreements db contract-id)}}
@@ -1220,14 +1246,32 @@
   #{:db/txInstant :db/doc :db/ident :db/valueType :db/cardinality :db/unique})
 
 (def ^:private reference-attrs
-  "Attributes that point to parent entities (redundant in contract context)."
+  "Attributes that point to parent entities (redundant in contract context).
+   Note: cross-contract refs like inflow/source-contract and outflow/target-contract
+   are NOT excluded — they are meaningful business facts."
   #{:payment/contract :fee/contract :installment/contract
     :disbursement/contract :deposit/contract :deposit/target-contract
-    :inflow/contract :inflow/source-contract
-    :outflow/contract :outflow/target-contract
+    :inflow/contract
+    :outflow/contract
     :principal-allocation/contract :contract/facility
     :clearance-letter/contract :statement/contract
-    :contract-agreement/contract :signing/document})
+    :contract-agreement/contract :signing/document
+    ;; Component refs (parent→child pointers, child shown as its own entity)
+    :payment/inflows :disbursement/outflows})
+
+(def ^:private cross-contract-ref-attrs
+  "Ref attrs that point to other contracts — resolve to external-id for display."
+  #{:inflow/source-contract :outflow/target-contract})
+
+(defn- resolve-contract-ref
+  "Resolve a contract entity ID to its external-id for display."
+  [db eid]
+  (try
+    (let [pulled (d/pull db [:contract/external-id :contract/id] eid)]
+      (or (:contract/external-id pulled)
+          (some-> (:contract/id pulled) str (subs 0 8))
+          (str eid)))
+    (catch Exception _ (str eid))))
 
 (defn build-entity-label-cache
   "Build a cache of entity labels by querying the history DB.
@@ -1314,7 +1358,9 @@
                             (conj datoms {:entity-id e
                                           :entity-type (entity-type-from-attr ident)
                                           :attribute ident
-                                          :value (nth d 2)
+                                          :value (if (contains? cross-contract-ref-attrs ident)
+                                                   (resolve-contract-ref db (nth d 2))
+                                                   (nth d 2))
                                           :added? (nth d 4)})
                             datoms)))
                       []
@@ -1413,11 +1459,7 @@
                               ;; Format attr changes for display
                             display-changes
                             (vec
-                             (for [c attr-changes
-                                   :when (not (#{:asserted :retracted}
-                                               (:operation c))
-                                               ;; Show all for updates, skip identity attrs for create/retract
-                                              )]
+                             (for [c attr-changes]
                                (assoc c
                                       :display-name (attribute-display-name (:attribute c))
                                       :display-old (format-value (:attribute c) (:old-value c))

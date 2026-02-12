@@ -11,7 +11,8 @@
    - Keep views simple and focused"
   (:require [hiccup.page :refer [html5 include-css]]
             [hiccup.core :refer [html]]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clojure.pprint :as pprint]))
 
 ;; ============================================================
 ;; Utility Functions
@@ -159,6 +160,48 @@
       .change-new { font-weight: 600; color: var(--pico-primary); }
       input[type='hidden'] { display: none !important; }
       input[type='number'] { font-family: var(--font-mono); }
+      /* Origination stepper */
+      .stepper { position: relative; padding: 0; }
+      .stepper-step { display: flex; gap: 1.25rem; position: relative; padding-bottom: 2rem; }
+      .stepper-step:last-child { padding-bottom: 0; }
+      .stepper-indicator { position: relative; flex-shrink: 0; }
+      .stepper-circle { width: 2.25rem; height: 2.25rem; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.8125rem; font-weight: 700; border: 2px solid var(--pico-muted-border-color); color: var(--pico-muted-color); background: #fff; position: relative; z-index: 1; }
+      .stepper-circle.completed { background: var(--color-ok); border-color: var(--color-ok); color: #fff; }
+      .stepper-circle.pending { background: var(--pico-primary); border-color: var(--pico-primary); color: #fff; animation: pulse-ring 2s ease-out infinite; }
+      .stepper-circle.future { background: #f5f5f4; border-color: var(--pico-muted-border-color); color: var(--pico-muted-color); }
+      @keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgba(99,102,241,0.4); } 70% { box-shadow: 0 0 0 6px rgba(99,102,241,0); } 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); } }
+      .stepper-step:not(:last-child) .stepper-indicator::after { content: ''; position: absolute; left: 50%; top: 2.5rem; bottom: -0.5rem; width: 2px; background: var(--pico-muted-border-color); transform: translateX(-50%); }
+      .stepper-step.completed:not(:last-child) .stepper-indicator::after { background: var(--color-ok); }
+      .stepper-content { flex: 1; min-width: 0; padding-top: 0.25rem; }
+      .stepper-header { margin-bottom: 0.5rem; }
+      .stepper-title { font-size: 0.9375rem; font-weight: 600; margin: 0; line-height: 1.3; }
+      .stepper-step.future .stepper-title { color: var(--pico-muted-color); }
+      .stepper-step.future .stepper-content { opacity: 0.5; }
+      .stepper-summary { background: var(--color-ok-bg); border: 1px solid #bbf7d0; border-radius: var(--pico-border-radius); padding: 0.625rem 0.875rem; font-size: 0.8125rem; }
+      .stepper-form { background: #f5f3ff; border: 1px solid #c4b5fd; border-radius: var(--pico-border-radius); padding: 0.875rem; margin-top: 0.25rem; }
+      .stepper-form label { font-size: 0.8125rem; margin-bottom: 0.25rem; }
+      .stepper-form button[type='submit'] { margin-top: 0.5rem; }
+      .retract-panel { margin-top: 0.5rem; padding: 0.75rem; background: var(--color-warn-bg); border: 1px solid #fde68a; border-radius: var(--pico-border-radius); }
+      .retract-panel label { font-size: 0.8125rem; margin-bottom: 0.25rem; }
+      .origination-complete { background: var(--color-ok-bg); border: 1px solid #bbf7d0; border-radius: var(--pico-border-radius); padding: 1rem 1.25rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.75rem; }
+      .origination-complete .check-icon { width: 2rem; height: 2rem; background: var(--color-ok); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; flex-shrink: 0; }
+      /* History tab */
+      .history-tx { border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); margin-bottom: 0.75rem; background: var(--pico-card-background-color); }
+      .history-tx > summary { padding: 0.75rem 1rem; cursor: pointer; font-size: 0.875rem; font-weight: 500; list-style: none; display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+      .history-tx > summary::-webkit-details-marker { display: none; }
+      .history-tx > summary::before { content: '\\25b8'; color: var(--pico-muted-color); font-size: 0.75rem; transition: transform 0.15s ease; flex-shrink: 0; }
+      .history-tx[open] > summary::before { transform: rotate(90deg); }
+      .history-tx[open] > summary { border-bottom: 1px solid var(--pico-muted-border-color); }
+      .history-tx-body { padding: 0.75rem 1rem; }
+      .history-tx-meta { border-left: 3px solid var(--pico-primary); background: #f5f3ff; padding: 0.5rem 0.75rem; border-radius: 0 var(--pico-border-radius) var(--pico-border-radius) 0; font-size: 0.75rem; margin-bottom: 0.75rem; overflow-x: auto; white-space: pre-wrap; line-height: 1.5; }
+      .history-tx .change-nil { color: var(--pico-muted-color); }
+      .history-tx table { margin-bottom: 0; font-size: 0.8125rem; }
+      .history-tx table th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--pico-muted-color); font-weight: 600; padding: 0.375rem 0.625rem; }
+      .history-tx table td { padding: 0.375rem 0.625rem; vertical-align: top; }
+      .history-tx table td kbd { font-size: 0.6875rem; padding: 0.0625rem 0.375rem; border-radius: 0.25rem; background: #f5f5f4; border: 1px solid var(--pico-muted-border-color); }
+      .tx-time { color: var(--pico-muted-color); font-size: 0.75rem; }
+      .tx-author { color: var(--pico-muted-color); font-size: 0.75rem; }
+      .tx-note { color: var(--pico-muted-color); font-size: 0.75rem; font-style: italic; }
     "]]
          [:body
           [:nav.container
@@ -428,7 +471,75 @@
         [:div#signatory-results
          {:style "border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); max-height: 200px; overflow-y: auto;"
           "data-show" "$showSignatoryResults"}]]
-       [:button {:type "submit"} "Add"]]]]]])
+       [:button {:type "submit"} "Add"]]]]]
+
+   ;; --- Collateral ---
+   [:div {:style "margin-top: 2rem;"}
+    [:h3 {:style "font-size: 1rem; margin-bottom: 0.75rem;"}
+     "Collateral "
+     [:span {:style "font-size: 0.7rem; background: var(--pico-muted-border-color); color: var(--pico-muted-color); padding: 0.15rem 0.5rem; border-radius: 1rem; vertical-align: middle;"} "Coming Soon"]]
+    [:div {:style "opacity: 0.6;"}
+     [:table
+      [:thead
+       [:tr
+        [:th "Type"]
+        [:th "Description"]
+        [:th "Value / Details"]]]
+      [:tbody
+       [:tr
+        [:td [:strong "Real Property (Land)"]]
+        [:td "Plot No. 3421, Al-Olaya District, Riyadh, Kingdom of Saudi Arabia. Total area: 2,450 sq.m. as per Title Deed No. 310/2024 issued by the General Authority for Survey and Geospatial Information."]
+        [:td
+         [:div {:style "font-size: 0.85rem;"}
+          [:div [:strong "Valuation 1: "] "SAR 4,200,000 — ABC Certified Valuers, dated 2024-03-15"]
+          [:div [:strong "Valuation 2: "] "SAR 4,050,000 — XYZ Appraisal Co., dated 2024-04-02"]
+          [:div [:strong "Valuation 3: "] "SAR 4,310,000 — National Valuation Bureau, dated 2024-04-18"]]]]
+       [:tr
+        [:td [:strong "Share Pledge"]]
+        [:td "Pledge over 35% of the issued and outstanding share capital of Al-Noor Trading Company LLC (CR No. 1010XXXXXX), representing 350,000 ordinary shares at a par value of SAR 10 per share."]
+        [:td
+         [:div {:style "font-size: 0.85rem;"}
+          [:div [:strong "Pledged Shares: "] "35% of issued capital"]
+          [:div [:strong "Company: "] "Al-Noor Trading Company LLC"]
+          [:div [:strong "Book Value: "] "SAR 3,500,000 as per audited financial statements dated 2024-12-31"]]]]]]]
+    [:p.text-muted {:style "font-size: 0.8rem; margin-top: 0.5rem;"}
+     "The Borrower hereby pledges, assigns, and grants a first-priority security interest in the above-described collateral to the Lender as security for the due and punctual performance of all obligations arising under or in connection with the Facility Agreement."]]
+
+   ;; --- Covenants ---
+   [:div {:style "margin-top: 2rem;"}
+    [:h3 {:style "font-size: 1rem; margin-bottom: 0.75rem;"}
+     "Covenants "
+     [:span {:style "font-size: 0.7rem; background: var(--pico-muted-border-color); color: var(--pico-muted-color); padding: 0.15rem 0.5rem; border-radius: 1rem; vertical-align: middle;"} "Coming Soon"]]
+    [:div {:style "opacity: 0.6;"}
+     [:table
+      [:thead
+       [:tr
+        [:th {:style "width: 3rem;"} "#"]
+        [:th "Covenant"]
+        [:th "Classification"]]]
+      [:tbody
+       [:tr
+        [:td "1"]
+        [:td "The Borrower shall route all business proceeds and receivables exclusively through the Point-of-Sale (\"POS\") terminal(s) designated by the Lender, and shall ensure that all repayment obligations under this Agreement are satisfied via said POS collections."]
+        [:td "Affirmative"]]
+       [:tr
+        [:td "2"]
+        [:td "The Borrower shall maintain a minimum monthly repayment amount of SAR 50,000 (Saudi Riyals Fifty Thousand Only), to be applied against the outstanding principal and accrued profit in accordance with the agreed repayment waterfall."]
+        [:td "Financial"]]
+       [:tr
+        [:td "3"]
+        [:td "In the event that the Borrower fails to remit any scheduled payment within thirty (30) calendar days following the applicable due date, such failure shall constitute an Event of Default, whereupon the entire outstanding principal balance, together with all accrued and unpaid profit, fees, and other amounts owing hereunder, shall become immediately due and payable without further notice or demand (\"Acceleration Clause\")."]
+        [:td "Event of Default"]]
+       [:tr
+        [:td "4"]
+        [:td "The Borrower shall not, without the prior written consent of the Lender, create, incur, assume, or permit to exist any lien, encumbrance, or security interest upon any of its assets or properties, whether now owned or hereafter acquired, except for Permitted Liens as defined herein."]
+        [:td "Negative"]]
+       [:tr
+        [:td "5"]
+        [:td "The Borrower shall deliver to the Lender, within ninety (90) days of the end of each fiscal year, audited financial statements prepared in accordance with International Financial Reporting Standards (\"IFRS\") as adopted in the Kingdom of Saudi Arabia, together with a Compliance Certificate executed by an authorized officer of the Borrower."]
+        [:td "Reporting"]]]]]
+    [:p.text-muted {:style "font-size: 0.8rem; margin-top: 0.5rem;"}
+     "Breach of any covenant set forth herein shall entitle the Lender to exercise all rights and remedies available under this Agreement, applicable law, and any ancillary security documents, including but not limited to acceleration of the outstanding facility amount."]]])
 
 (defn- format-datetime
   "Format datetime with both date and time for audit trail."
@@ -499,52 +610,68 @@
                          (when (> cnt 1) "s")
                          " " (name operation))))))))
 
-(defn- attribute-changes-table
-  "Render a table of attribute changes with before -> after values."
-  [changes]
-  (when (seq changes)
-    [:table
-     [:thead
-      [:tr
-       [:th "Attribute"]
-       [:th "Change"]]]
-     [:tbody
-      (for [c changes
-            :let [{:keys [attribute operation display-name display-old display-new]} c]]
-        [:tr {:key (str attribute)}
-         [:td display-name]
-         [:td
-          (case operation
-            :updated [:span
-                      [:span.change-old display-old]
-                      " \u2192 "
-                      [:span.change-new display-new]]
-            :asserted [:span.change-new display-new]
-            :retracted [:span.change-old display-old]
-            [:span (or display-new display-old)])]])]]))
+(defn- tx-metadata-block
+  "Render TX metadata as a compact EDN block with left-border accent."
+  [tx]
+  (let [{:keys [tx-id tx-instant tx-metadata]} tx
+        m (cond-> (or tx-metadata {})
+            tx-instant (assoc :tx-instant tx-instant)
+            tx-id (assoc :tx-id tx-id))]
+    (when (seq m)
+      [:pre.mono.history-tx-meta
+       (str/trim (with-out-str (pprint/pprint m)))])))
 
 (defn- history-transaction-card
-  "Render a single transaction in the history as a <details> element.
-   Native browser expand/collapse — no JavaScript needed."
+  "Render a single transaction as a <details> card with TX metadata and a flat change table.
+   Each attribute change is one row: Entity | Attribute | Old Value | New Value."
   [tx _idx]
   (let [{:keys [tx-instant tx-metadata entities]} tx
         author (:tx/author tx-metadata)
-        note (:tx/note tx-metadata)]
-    [:details
+        note (:tx/note tx-metadata)
+        ;; Flatten all entity display-changes into rows
+        all-rows (for [entity entities
+                       change (:display-changes entity)]
+                   (assoc change
+                          :entity-type (:entity-type entity)
+                          :entity-label (:label entity)
+                          :entity-operation (:operation entity)))]
+    [:details.history-tx
      [:summary
-      (tx-summary-text tx)
-      " "
-      [:small (format-datetime tx-instant)]
-      (when author [:small (str " by " author)])
-      (when note [:small [:em (str " \"" note "\"")]])]
-     ;; Entity changes (shown on expand)
-     (for [[i entity] (map-indexed vector entities)]
-       [:div {:key (str (:entity-id entity) "-" i)
-              :style "margin-bottom: 0.5rem;"}
-        [:p [:kbd (entity-type-display (:entity-type entity))]
-         (when (:label entity) (str " " (:label entity)))
-         " " [:small [:em (name (:operation entity))]]]
-        (attribute-changes-table (:display-changes entity))])]))
+      [:span (tx-summary-text tx)]
+      [:span.tx-time (format-datetime tx-instant)]
+      (when author [:span.tx-author (str "by " author)])
+      (when note [:span.tx-note (str "\u201c" note "\u201d")])]
+     [:div.history-tx-body
+      ;; TX metadata in EDN
+      (tx-metadata-block tx)
+      ;; Flat changes table
+      (if (empty? all-rows)
+        [:p [:small.text-muted "No attribute changes in this transaction."]]
+        [:div {:style "overflow-x: auto;"}
+         [:table.striped
+          [:thead
+           [:tr
+            [:th "Entity"]
+            [:th "Attribute"]
+            [:th "Old Value"]
+            [:th "New Value"]]]
+          [:tbody
+           (for [row all-rows]
+             [:tr
+              [:td [:kbd (entity-type-display (:entity-type row))]
+               (when (:entity-label row)
+                 (str " " (:entity-label row)))]
+              [:td (:display-name row)]
+              [:td.mono
+               (case (:operation row)
+                 :updated   [:span.change-old (:display-old row)]
+                 :retracted [:span.change-old (:display-old row)]
+                 [:span.change-nil "\u2014"])]
+              [:td.mono
+               (case (:operation row)
+                 :updated  [:span.change-new (:display-new row)]
+                 :asserted [:span.change-new (:display-new row)]
+                 [:span.change-nil "\u2014"])]])]]])]]))
 
 (defn- history-filters-bar
   "Render filter controls for history tab."
@@ -898,160 +1025,320 @@
        "Calculate"]]]
     [:div#settlement-result-area]]])
 
-(defn origination-form
-  "Render origination modal.
+;; ============================================================
+;; Origination Stepper
+;; ============================================================
 
-   The new model: the user specifies disbursement to borrower + optional
-   deposit from funding. Fee settlement, deposit funding, and installment
-   prepayment are NOT explicit steps — the waterfall derives these from
-   available = principal - outflows.
+(defn- origination-steps
+  "Derive origination step statuses from contract state.
 
-   Args:
-   - contract-id: UUID of contract
-   - state: Contract state map from contract/contract-state
-
-   Returns: Hiccup modal div"
-  [contract-id state]
+   Returns ordered vector of step maps with:
+   - :key        keyword identifier
+   - :step       display number
+   - :label      display name
+   - :desc       short description
+   - :required?  whether mandatory for activation
+   - :applicable? whether this step applies (false hides it)
+   - :status     :completed | :pending | :future
+   - :data       entity summary when completed
+   - :retractable? whether retract is available"
+  [state]
   (let [contract (:contract state)
-        principal (or (:principal contract) 0M)
-        security-deposit (or (:security-deposit-required contract) 0M)
-        deposit-held (or (:deposit-held state) 0M)
-        deposit-needed (max 0M (- security-deposit deposit-held))
-        disb-iban (:disbursement-iban contract)
-        disb-bank (:disbursement-bank contract)
-        fmt-val (fn [n] (format "%.2f" (double n)))]
-    [:dialog#origination-modal {:data-attr "{'open': $showOriginationModal}"}
-     [:article
-      [:header [:h3 "Originate Contract"]]
-      [:p [:small "Enter disbursement details. Fee settlement, deposit, and prepayment "
-           "are automatically derived by the waterfall from available funds."]]
+        inflows (:inflows state)
+        disbursements (:disbursements state)
+        deposits (:deposits-raw state)
+        outflows (:outflows state)
 
-      [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/originate', {contentType: 'form'})")}
+        funding-inflows (filterv #(= :funding (:source %)) inflows)
+        step1? (seq funding-inflows)
 
-       ;; Principal display
-       [:table
-        [:tbody
-         [:tr [:td "Principal"] [:td.text-right [:strong (str "SAR " (format-money principal))]]]
-         (when (pos? deposit-needed)
-           [:tr [:td "Deposit from Funding"] [:td.text-right (str "SAR " (format-money deposit-needed))]])]]
+        funding-disbs (filterv #(= :funding (:type %)) disbursements)
+        step2? (seq funding-disbs)
 
-       ;; Disbursement amount
-       [:label {:for "orig-disbursement"} "Borrower Disbursement Amount (SAR) *"
-        [:input {:type "number"
-                 :id "orig-disbursement"
-                 :name "disbursement-amount"
-                 :step "0.01"
-                 :min "0.01"
-                 :required true
-                 :placeholder "Amount wired to borrower"}]]
+        deposit-req (or (:security-deposit-required contract) 0)
+        funding-deps (filterv #(= :funding (:source %)) deposits)
+        step3-applicable? (pos? deposit-req)
+        step3? (seq funding-deps)
 
-       ;; Deposit from funding
-       (when (pos? deposit-needed)
-         [:div
-          [:label
-           [:input {:type "checkbox"
-                    :name "include-deposit"
-                    :value "true"
-                    :checked true}]
-           (str " Deduct deposit from funding (SAR " (format-money deposit-needed) ")")]
-          [:input {:type "hidden" :name "deposit-from-funding"
-                   :value (fmt-val deposit-needed)}]])
+        settlement-outs (filterv #(= :settlement (:type %)) outflows)
+        step4? (seq settlement-outs)
 
-       ;; Refund amount (optional)
-       [:label {:for "orig-refund"} "Refund Amount (SAR)"
-        [:input {:type "number"
-                 :id "orig-refund"
-                 :name "refund-amount"
-                 :step "0.01"
-                 :min "0"
-                 :placeholder "Excess to return to customer (optional)"}]]
+        refund-disbs (filterv #(= :refund (:type %)) disbursements)
+        step5? (seq refund-disbs)
 
-       [:hr]
+        step6? (some? (:disbursed-at contract))]
 
-       ;; Date, reference, IBAN, bank
-       [:label {:for "orig-date"} "Origination Date *"
-        [:input {:type "date"
-                 :id "orig-date"
-                 :name "date"
-                 :required true
-                 :value (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") (java.util.Date.))}]]
-       [:label {:for "orig-disb-reference"} "Wire Reference *"
-        [:input {:type "text"
-                 :id "orig-disb-reference"
-                 :name "disbursement-reference"
-                 :required true
-                 :placeholder "e.g., WT-001"}]]
+    [{:key :funding-inflow
+      :step 1
+      :label "Record Funding Inflow"
+      :desc "Principal enters the waterfall"
+      :required? true
+      :applicable? true
+      :status (if step1? :completed :pending)
+      :data (first funding-inflows)
+      :retractable? (boolean step1?)}
+     {:key :borrower-disbursement
+      :step 2
+      :label "Record Borrower Disbursement"
+      :desc "Wire funds to borrower"
+      :required? true
+      :applicable? true
+      :status (cond step2? :completed step1? :pending :else :future)
+      :data (first funding-disbs)
+      :retractable? (boolean step2?)}
+     {:key :deposit-from-funding
+      :step 3
+      :label "Deposit from Funding"
+      :desc "Deduct security deposit from principal"
+      :required? false
+      :applicable? step3-applicable?
+      :status (cond step3? :completed (and step1? step3-applicable?) :pending :else :future)
+      :data (first funding-deps)
+      :retractable? (boolean step3?)}
+     {:key :settlement
+      :step 4
+      :label "Record Settlement"
+      :desc "Cross-contract refinancing transfer"
+      :required? false
+      :applicable? true
+      :status (cond step4? :completed step1? :pending :else :future)
+      :data (first settlement-outs)
+      :retractable? (boolean step4?)}
+     {:key :refund
+      :step 5
+      :label "Record Refund"
+      :desc "Return excess to customer"
+      :required? false
+      :applicable? true
+      :status (cond step5? :completed step1? :pending :else :future)
+      :data (first refund-disbs)
+      :retractable? (boolean step5?)}
+     {:key :set-disbursed-at
+      :step 6
+      :label "Activate Contract"
+      :desc "Set disbursed date, shift installment schedule"
+      :required? true
+      :applicable? true
+      :status (cond step6? :completed (and step1? step2?) :pending :else :future)
+      :data (when step6? {:date (:disbursed-at contract)})
+      :retractable? (boolean step6?)}]))
+
+(defn- retraction-form
+  "Inline retraction form for a completed origination step."
+  [contract-id step-key signal-name]
+  [:div.retract-panel {"data-show" (str "$" signal-name)}
+   [:form {"data-on:submit"
+           (str "@post('/contracts/" contract-id
+                "/origination/" (name step-key) "/retract', {contentType: 'form'})")}
+    [:div.grid
+     [:label "Reason *"
+      [:select {:name "reason" :required true}
+       [:option {:value ""} "Select..."]
+       [:option {:value "correction"} "Correction"]
+       [:option {:value "duplicate-removal"} "Duplicate"]
+       [:option {:value "erroneous-entry"} "Erroneous Entry"]]]
+     [:label "Note"
+      [:input {:type "text" :name "note"
+               :placeholder "Optional explanation"}]]]
+    [:div {:style "display: flex; gap: 0.5rem; justify-content: flex-end;"}
+     [:button.secondary
+      {:type "button"
+       :style "padding: 0.25rem 0.75rem; font-size: 0.8125rem;"
+       "data-on:click" (str "$" signal-name " = false")}
+      "Cancel"]
+     [:button.btn-caution
+      {:type "submit"
+       :style "padding: 0.25rem 0.75rem; font-size: 0.8125rem;"}
+      "Confirm Retract"]]]])
+
+(defn- step-summary-text
+  "Render summary text for a completed step."
+  [step-key data]
+  (case step-key
+    :funding-inflow
+    [:span.mono (str "SAR " (format-money (:amount data)) " on " (format-date (:date data)))]
+    :borrower-disbursement
+    [:span.mono (str "SAR " (format-money (:amount data))
+                     (when (:reference data) (str " \u2014 " (:reference data)))
+                     (when (:bank data) (str " (" (:bank data) ")")))]
+    :deposit-from-funding
+    [:span.mono (str "SAR " (format-money (:amount data)) " on " (format-date (:date data)))]
+    :settlement
+    [:span.mono (str "SAR " (format-money (:amount data))
+                     (when (:target-contract data) (str " \u2192 " (:target-contract data))))]
+    :refund
+    [:span.mono (str "SAR " (format-money (:amount data))
+                     (when (:reference data) (str " \u2014 " (:reference data))))]
+    :set-disbursed-at
+    [:span.mono (format-date (:date data))]
+    [:span ""]))
+
+(def ^:private step-signal-names
+  "Map from step key to camelCase Datastar signal name for retract toggle."
+  {:funding-inflow "retractFundingInflow"
+   :borrower-disbursement "retractBorrowerDisbursement"
+   :deposit-from-funding "retractDepositFromFunding"
+   :settlement "retractSettlement"
+   :refund "retractRefund"
+   :set-disbursed-at "retractSetDisbursedAt"})
+
+(defn- origination-step-form
+  "Render the input form for a pending origination step."
+  [contract-id state step-key]
+  (let [contract (:contract state)
+        today (.format (java.text.SimpleDateFormat. "yyyy-MM-dd") (java.util.Date.))]
+    (case step-key
+      :funding-inflow
+      [:form.stepper-form {"data-on:submit"
+                           (str "@post('/contracts/" contract-id "/origination/funding-inflow', {contentType: 'form'})")}
        [:div.grid
-        [:label {:for "orig-disb-iban"} "Destination IBAN"
-         [:input {:type "text"
-                  :id "orig-disb-iban"
-                  :name "disbursement-iban"
-                  :value (or disb-iban "")
+        [:label "Amount (SAR) *"
+         [:input {:type "number" :name "amount" :step "0.01" :required true
+                  :value (format "%.2f" (double (or (:principal contract) 0M)))}]]
+        [:label "Date *"
+         [:input {:type "date" :name "date" :required true :value today}]]]
+       [:button {:type "submit"} "Record Funding Inflow"]]
+
+      :borrower-disbursement
+      [:form.stepper-form {"data-on:submit"
+                           (str "@post('/contracts/" contract-id "/origination/borrower-disbursement', {contentType: 'form'})")}
+       [:div.grid
+        [:label "Amount (SAR) *"
+         [:input {:type "number" :name "amount" :step "0.01" :required true
+                  :placeholder "Disbursement amount"}]]
+        [:label "Date *"
+         [:input {:type "date" :name "date" :required true :value today}]]]
+       [:div.grid
+        [:label "Wire Reference *"
+         [:input {:type "text" :name "reference" :required true
+                  :placeholder "e.g., WT-001"}]]
+        [:label "IBAN"
+         [:input {:type "text" :name "iban"
+                  :value (or (:disbursement-iban contract) "")
                   :placeholder "e.g., SA242000..."}]]
-        [:label {:for "orig-disb-bank"} "Destination Bank"
-         [:input {:type "text"
-                  :id "orig-disb-bank"
-                  :name "disbursement-bank"
-                  :value (or disb-bank "")
+        [:label "Bank"
+         [:input {:type "text" :name "bank"
+                  :value (or (:disbursement-bank contract) "")
                   :placeholder "e.g., ANB"}]]]
+       [:button {:type "submit"} "Record Disbursement"]]
 
-       [:footer
-        [:button.secondary
-         {:type "button"
-          "data-on:click" "$showOriginationModal = false"}
-         "Cancel"]
-        [:button
-         {:type "submit"}
-         "Originate"]]]]]))
+      :deposit-from-funding
+      (let [deposit-req (or (:security-deposit-required contract) 0)
+            deposit-held (or (:deposit-held state) 0M)
+            needed (max 0M (- deposit-req deposit-held))]
+        [:form.stepper-form {"data-on:submit"
+                             (str "@post('/contracts/" contract-id "/origination/deposit-from-funding', {contentType: 'form'})")}
+         [:div.grid
+          [:label "Deposit Amount (SAR) *"
+           [:input {:type "number" :name "amount" :step "0.01" :required true
+                    :value (format "%.2f" (double needed))}]]
+          [:label "Date *"
+           [:input {:type "date" :name "date" :required true :value today}]]]
+         [:button {:type "submit"} "Record Deposit"]])
 
-(defn retract-origination-modal
-  "Render modal for retracting origination entities (data correction).
+      :settlement
+      [:form.stepper-form {"data-on:submit"
+                           (str "@post('/contracts/" contract-id "/origination/settlement', {contentType: 'form'})")}
+       [:div.grid
+        [:label "Old Contract ID (UUID) *"
+         [:input {:type "text" :name "old-contract-id" :required true
+                  :placeholder "UUID of contract being settled"}]]
+        [:label "Amount (SAR) *"
+         [:input {:type "number" :name "amount" :step "0.01" :required true
+                  :placeholder "Settlement amount"}]]]
+       [:div.grid
+        [:label "Date *"
+         [:input {:type "date" :name "date" :required true :value today}]]]
+       [:button {:type "submit"} "Record Settlement"]]
 
-   Each origination step is retracted independently via individual
-   operations. This modal provides a UI for selecting what to retract.
-   Datomic history preserves all retracted datoms for audit.
+      :refund
+      [:form.stepper-form {"data-on:submit"
+                           (str "@post('/contracts/" contract-id "/origination/refund', {contentType: 'form'})")}
+       [:div.grid
+        [:label "Refund Amount (SAR) *"
+         [:input {:type "number" :name "amount" :step "0.01" :required true
+                  :placeholder "Excess to return"}]]
+        [:label "Date *"
+         [:input {:type "date" :name "date" :required true :value today}]]]
+       [:div.grid
+        [:label "Wire Reference *"
+         [:input {:type "text" :name "reference" :required true
+                  :placeholder "e.g., REF-001"}]]]
+       [:button {:type "submit"} "Record Refund"]]
+
+      :set-disbursed-at
+      [:form.stepper-form {"data-on:submit"
+                           (str "@post('/contracts/" contract-id "/origination/set-disbursed-at', {contentType: 'form'})")}
+       [:div.grid
+        [:label "Disbursement Date *"
+         [:input {:type "date" :name "date" :required true :value today}]]]
+       [:button {:type "submit"} "Activate Contract"]]
+
+      nil)))
+
+(defn origination-tab
+  "Render origination stepper tab content.
+
+   Shows a vertical stepper with numbered steps, connecting lines,
+   and status-dependent rendering: form (pending), summary (completed),
+   or disabled (future). Each completed step has an inline retract toggle.
 
    Args:
    - contract-id: UUID of contract
+   - state: contract-state map (must include :inflows, :outflows,
+     :disbursements, :deposits-raw)
 
-   Returns: Hiccup modal"
-  [contract-id]
-  [:dialog#retract-origination-modal {:data-attr "{'open': $showRetractOriginationModal}"}
-   [:article
-    [:header [:h3 "Retract Origination"]]
-    [:form {"data-on:submit" (str "@post('/contracts/" contract-id "/retract-origination', {contentType: 'form'})")}
-     [:div.flash-caution
-      [:p [:strong "This will retract all origination entities:"]]
-      [:ul
-       [:li "Funding inflow (principal entering waterfall)"]
-       [:li "Borrower disbursement (with outflow)"]
-       [:li "Deposits from funding"]
-       [:li "Settlement outflow + inflow (if refinancing)"]
-       [:li "Refund disbursement (if excess returned)"]
-       [:li "Disbursed-at date (reverts status to pending)"]]]
-     [:p [:small "Use this only for data corrections (wrong amounts, duplicate origination). "
-          "Datomic history preserves retracted data for audit purposes."]]
-     [:label {:for "retract-orig-reason"} "Reason for Correction *"
-      [:select {:id "retract-orig-reason"
-                :name "reason"
-                :required true}
-       [:option {:value ""} "Select reason..."]
-       [:option {:value "correction"} "Correction (wrong amounts)"]
-       [:option {:value "duplicate-removal"} "Duplicate Origination"]
-       [:option {:value "erroneous-entry"} "Erroneous Entry"]]]
-     [:label {:for "retract-orig-note"} "Note (Optional)"
-      [:textarea {:id "retract-orig-note"
-                  :name "note"
-                  :rows "2"
-                  :placeholder "e.g., Wrong disbursement amount, re-originating"}]]
-     [:footer
-      [:button.secondary
-       {:type "button"
-        "data-on:click" "$showRetractOriginationModal = false"}
-       "Cancel"]
-      [:button.btn-caution
-       {:type "submit"}
-       "Retract Origination"]]]]])
+   Returns: Hiccup div with id #origination-tab-content"
+  [contract-id state]
+  (let [steps (origination-steps state)
+        visible-steps (filter :applicable? steps)
+        contract (:contract state)
+        all-required-done? (every? #(or (= :completed (:status %))
+                                        (not (:required? %)))
+                                   steps)]
+    [:div#origination-tab-content
+     (when all-required-done?
+       [:div.origination-complete
+        [:div.check-icon "\u2713"]
+        [:div
+         [:strong "Contract fully originated"]
+         [:br]
+         [:small.text-muted (str "Disbursed on " (format-date (:disbursed-at contract)))]]])
+     [:div.stepper
+      (for [{:keys [key step label desc required? status data retractable?] :as s} visible-steps]
+        (let [signal-name (get step-signal-names key)]
+          [:div.stepper-step {:key (name key)
+                              :class (name status)}
+           ;; Indicator circle + connecting line
+           [:div.stepper-indicator
+            [:div.stepper-circle {:class (name status)}
+             (if (= :completed status)
+               "\u2713"
+               (str step))]]
+           ;; Content
+           [:div.stepper-content
+            [:div.stepper-header
+             [:h4.stepper-title
+              label
+              (when-not required?
+                [:span.st-off {:style "margin-left: 0.5rem; vertical-align: middle;"} "optional"])]]
+            [:p.text-muted {:style "font-size: 0.8125rem; margin: 0 0 0.5rem 0;"} desc]
+            ;; Completed: show summary + retract
+            (when (= :completed status)
+              [:div.stepper-summary
+               [:div {:style "display: flex; justify-content: space-between; align-items: center;"}
+                (step-summary-text key data)
+                (when retractable?
+                  [:button.secondary
+                   {:type "button"
+                    :style "padding: 0.2rem 0.6rem; font-size: 0.75rem; margin: 0;"
+                    "data-on:click" (str "$" signal-name " = !$" signal-name)}
+                   "Retract"])]
+               (when retractable?
+                 (retraction-form contract-id key signal-name))])
+            ;; Pending: show form
+            (when (= :pending status)
+              (origination-step-form contract-id state key))]]))]]))
 
 (defn generate-clearance-letter-modal
   "Modal form for generating a clearance letter."
@@ -1198,26 +1485,23 @@
              "data-signals:show-retract-payment-modal" "false"
              "data-signals:show-retract-contract-modal" "false"
              "data-signals:show-settlement-modal" "false"
-             "data-signals:show-origination-modal" "false"
-             "data-signals:show-retract-origination-modal" "false"
              "data-signals:show-clearance-letter-modal" "false"
              "data-signals:show-statement-modal" "false"
              "data-signals:retract-payment-id" "''"
              "data-signals:retract-ref" "''"
              "data-signals:retract-amount" "''"
-             "data-signals:override-toggle" "false"}
+             "data-signals:override-toggle" "false"
+             ;; Origination stepper retraction toggles
+             "data-signals:retract-funding-inflow" "false"
+             "data-signals:retract-borrower-disbursement" "false"
+             "data-signals:retract-deposit-from-funding" "false"
+             "data-signals:retract-settlement" "false"
+             "data-signals:retract-refund" "false"
+             "data-signals:retract-set-disbursed-at" "false"}
        (flash-message flash)
        [:div {:style "margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;"}
         [:a.secondary {:href "/contracts" :role "button"} "\u2190 Back to Contracts"]
         [:div.action-bar
-         [:button
-          {:type "button"
-           "data-on:click" "$showOriginationModal = true"}
-          "Originate"]
-         [:button.btn-caution
-          {:type "button"
-           "data-on:click" "$showRetractOriginationModal = true"}
-          "Retract Origination"]
          [:button
           {:type "button"
            "data-on:click" "$showSettlementModal = true"}
@@ -1237,6 +1521,8 @@
                   "data-on:click" "$activeTab = 'overview'"} "Overview"]
         [:button {:data-class "{'active': $activeTab === 'schedule'}"
                   "data-on:click" "$activeTab = 'schedule'"} "Schedule"]
+        [:button {:data-class "{'active': $activeTab === 'origination'}"
+                  "data-on:click" "$activeTab = 'origination'"} "Origination"]
         [:button {:data-class "{'active': $activeTab === 'history'}"
                   "data-on:click" (str "$activeTab = 'history'; if(!$historyLoaded) { $historyLoaded = true; @get('" "/contracts/" contract-id "/history-tab') }")} "History"]
         [:button {:data-class "{'active': $activeTab === 'documents'}"
@@ -1248,6 +1534,8 @@
         (parties-section contract-id (:contract state))]
        [:div#tab-schedule.tab-content {"data-class" "{'active': $activeTab === 'schedule'}"}
         (installments-table (:installments state))]
+       [:div#tab-origination.tab-content {"data-class" "{'active': $activeTab === 'origination'}"}
+        (origination-tab contract-id state)]
        [:div#tab-history.tab-content {"data-class" "{'active': $activeTab === 'history'}"}
         [:div#history-tab-content
          [:p [:small "Click the History tab to load transaction history..."]]]]
@@ -1258,8 +1546,6 @@
        (retract-payment-modal contract-id)
        (retract-contract-modal contract-id (get-in state [:contract :external-id]))
        (settlement-form contract-id)
-       (origination-form contract-id state)
-       (retract-origination-modal contract-id)
        (generate-clearance-letter-modal contract-id)
        (generate-statement-modal contract-id)]))))
 
